@@ -1,0 +1,306 @@
+<!DOCTYPE html>
+<html lang="zh-CN">
+<head>
+    <meta charset="UTF-8">
+    <meta name="viewport" content="width=device-width, initial-scale=1.0">
+    <title>GagneFlow — 教案生成助手</title>
+    <link rel="icon" type="image/svg+xml" href="favicon.svg">
+    <link rel="stylesheet" href="styles.css">
+    <script src="https://cdn.jsdelivr.net/npm/marked@11.1.1/marked.min.js"></script>
+    <link rel="stylesheet" href="https://cdn.jsdelivr.net/npm/highlight.js@11.9.0/styles/github.min.css">
+    <script src="https://cdn.jsdelivr.net/npm/highlight.js@11.9.0/es/highlight.min.js"></script>
+</head>
+<body>
+
+<!-- ============ 登录/注册覆盖层 ============ -->
+<div class="auth-overlay" id="authOverlay">
+    <div class="auth-container">
+        <div class="auth-forms">
+            <div class="auth-form-wrapper">
+                <!-- 登录表单 -->
+                <form class="auth-form auth-form-signin" id="signinForm">
+                    <h2 class="auth-title">登录</h2>
+                    <div class="auth-input-wrap">
+                        <svg class="auth-input-icon" width="18" height="18" viewBox="0 0 24 24" fill="none" stroke="#777" stroke-width="1.5"><path d="M20 21v-2a4 4 0 00-4-4H8a4 4 0 00-4 4v2"/><circle cx="12" cy="7" r="4"/></svg>
+                        <input type="text" id="signinUsername" placeholder="请输入内容！" required autocomplete="username">
+                    </div>
+                    <div class="auth-input-wrap">
+                        <svg class="auth-input-icon" width="18" height="18" viewBox="0 0 24 24" fill="none" stroke="#777" stroke-width="1.5"><rect x="3" y="11" width="18" height="11" rx="2"/><path d="M7 11V7a5 5 0 0110 0v4"/></svg>
+                        <input type="password" id="signinPassword" placeholder="请输入内容！" required minlength="6" autocomplete="current-password">
+                    </div>
+                    <div class="auth-error" id="signinError"></div>
+                    <button type="submit" class="auth-btn">登录</button>
+                </form>
+                <!-- 注册表单 -->
+                <form class="auth-form auth-form-signup" id="signupForm">
+                    <h2 class="auth-title">注册</h2>
+                    <div class="auth-input-wrap">
+                        <svg class="auth-input-icon" width="18" height="18" viewBox="0 0 24 24" fill="none" stroke="#777" stroke-width="1.5"><path d="M20 21v-2a4 4 0 00-4-4H8a4 4 0 00-4 4v2"/><circle cx="12" cy="7" r="4"/></svg>
+                        <input type="text" id="signupUsername" placeholder="请输入内容！" required minlength="2" autocomplete="username">
+                    </div>
+                    <div class="auth-input-wrap">
+                        <svg class="auth-input-icon" width="18" height="18" viewBox="0 0 24 24" fill="none" stroke="#777" stroke-width="1.5"><rect x="3" y="11" width="18" height="11" rx="2"/><path d="M7 11V7a5 5 0 0110 0v4"/></svg>
+                        <input type="password" id="signupPassword" placeholder="密码（至少6位）" required minlength="6" autocomplete="new-password">
+                    </div>
+                    <div class="auth-error" id="signupError"></div>
+                    <button type="submit" class="auth-btn">注册</button>
+                </form>
+            </div>
+        </div>
+        <div class="auth-panels">
+            <div class="auth-panel auth-panel-left">
+                <div class="auth-panel-content">
+                    <h3>首次使用？</h3>
+                    <p>创建账号，开始你的智能教案之旅</p>
+                    <button class="auth-btn auth-btn-ghost" id="toSignupBtn">注册</button>
+                </div>
+            </div>
+            <div class="auth-panel auth-panel-right">
+                <div class="auth-panel-content">
+                    <h3>已有账号？</h3>
+                    <p>登录继续你的教学对话</p>
+                    <button class="auth-btn auth-btn-ghost" id="toSigninBtn">登录</button>
+                </div>
+            </div>
+        </div>
+    </div>
+</div>
+
+<!-- ============ 主界面 ============ -->
+<div class="app" id="appLayout" style="display:none">
+    <!-- 侧边栏 -->
+    <aside class="sidebar">
+        <div class="sidebar-brand">
+            <svg width="20" height="20" viewBox="0 0 64 64" class="brand-icon">
+                <rect width="64" height="64" rx="14" fill="currentColor" opacity="0.15"/>
+                <path d="M32 14 L20 20 V44 L32 38 L44 44 V20 Z" fill="none" stroke="currentColor" stroke-width="2" stroke-linejoin="round"/>
+                <line x1="32" y1="14" x2="32" y2="38" stroke="currentColor" stroke-width="1.5" stroke-linejoin="round"/>
+            </svg>
+            <span>GagneFlow</span>
+        </div>
+
+        <!-- 功能模块切换 -->
+        <div class="sidebar-nav">
+            <button class="nav-btn active" data-module="chat" id="navChatBtn">
+                <svg width="16" height="16" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><path d="M21 15a2 2 0 01-2 2H7l-4 4V5a2 2 0 012-2h14a2 2 0 012 2z"/></svg>
+                智能对话
+            </button>
+            <button class="nav-btn" data-module="lesson" id="navLessonBtn">
+                <svg width="16" height="16" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><path d="M4 19.5A2.5 2.5 0 016.5 17H20"/><path d="M6.5 2H20v20H6.5A2.5 2.5 0 014 19.5v-15A2.5 2.5 0 016.5 2z"/></svg>
+                教案生成
+            </button>
+        </div>
+
+        <button class="btn-new-chat" id="newChatBtn" style="display:none">
+            <svg width="16" height="16" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><path d="M12 5v14M5 12h14"/></svg>
+            新建会话
+        </button>
+
+        <div class="history-list" id="chatHistoryList"></div>
+
+        <div class="sidebar-user">
+            <div class="user-avatar" id="sidebarAvatar">
+                <svg width="16" height="16" viewBox="0 0 24 24" fill="none" stroke="#fff" stroke-width="2"><path d="M20 21v-2a4 4 0 00-4-4H8a4 4 0 00-4 4v2"/><circle cx="12" cy="7" r="4"/></svg>
+            </div>
+            <div class="user-info">
+                <span class="user-name" id="sidebarUsername"></span>
+                <button class="btn-logout" id="logoutBtn">退出</button>
+            </div>
+        </div>
+    </aside>
+
+    <!-- 主内容区 -->
+    <main class="main">
+
+        <!-- ===== 模块一：智能对话 ===== -->
+        <div class="module module-chat active" id="moduleChat">
+            <header class="chat-header">
+                <span class="header-title" id="headerTitle">新对话</span>
+            </header>
+            <div class="chat-body" id="chatMessages">
+                <div class="welcome" id="welcomeGreeting">
+                    <svg width="48" height="48" viewBox="0 0 64 64" class="welcome-icon">
+                        <rect width="64" height="64" rx="14" fill="#f5f0eb"/>
+                        <path d="M32 14 L20 20 V44 L32 38 L44 44 V20 Z" fill="none" stroke="#c48650" stroke-width="2" stroke-linejoin="round"/>
+                        <line x1="32" y1="14" x2="32" y2="38" stroke="#c48650" stroke-width="1.5"/>
+                    </svg>
+                    <h2>GagneFlow</h2>
+                    <p>输入教学需求，开始生成教案</p>
+                </div>
+            </div>
+            <div class="chat-footer">
+                <div class="input-row">
+                    <div class="input-box">
+                        <textarea id="messageInput" placeholder="输入你的教学需求..." rows="1"></textarea>
+                        <button class="btn-send" id="sendButton" title="发送">
+                            <svg width="18" height="18" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><path d="M22 2L11 13M22 2l-7 20-4-9M22 2L2 9l9 4"/></svg>
+                        </button>
+                    </div>
+                </div>
+            </div>
+        </div>
+
+        <!-- ===== 模块二：教案生成 ===== -->
+        <div class="module module-lesson" id="moduleLesson">
+            <header class="lesson-header">
+                <span class="header-title">教案生成</span>
+            </header>
+
+            <!-- 教案参数配置面板 -->
+            <div class="lesson-panel" id="lessonPanel">
+                <div class="lp-section">
+                    <div class="lp-section-title">基础信息</div>
+                    <div class="form-grid">
+                        <div class="form-group">
+                            <label>学段 <span class="required">*</span></label>
+                            <select id="lpStage">
+                                <option value="">请选择</option>
+                                <option value="小学">小学</option>
+                                <option value="初中">初中</option>
+                                <option value="高中">高中</option>
+                            </select>
+                        </div>
+                        <div class="form-group">
+                            <label>年级 <span class="required">*</span></label>
+                            <select id="lpGrade" disabled>
+                                <option value="">请先选择学段</option>
+                            </select>
+                        </div>
+                        <div class="form-group">
+                            <label>学科 <span class="required">*</span></label>
+                            <select id="lpSubject" disabled>
+                                <option value="">请先选择学段</option>
+                            </select>
+                        </div>
+                    </div>
+                    <div class="form-grid">
+                        <div class="form-group">
+                            <label>课时 <span class="required">*</span></label>
+                            <input type="text" id="lpHours" list="lpHoursList" placeholder="如 2课时">
+                            <datalist id="lpHoursList"></datalist>
+                        </div>
+                    </div>
+                </div>
+
+                <div class="lp-section">
+                    <div class="lp-section-title">教学目标与模式</div>
+                    <div class="form-grid">
+                        <div class="form-group full">
+                            <label>教学目标 <span class="required">*</span></label>
+                            <textarea id="lpGoals" rows="3" placeholder="请输入内容！如：认识分数的概念，能读写简单分数"></textarea>
+                        </div>
+                        <div class="form-group">
+                            <label>教学模式</label>
+                            <select id="lpMode">
+                                <option value="quick">快速生成</option>
+                                <option value="copilot">分步确认</option>
+                            </select>
+                        </div>
+                    </div>
+                </div>
+            </div>
+
+            <!-- 参考资料上传（教案生成专属） -->
+            <div class="lp-section">
+                <div class="lp-section-title">
+                    参考资料
+                    <button class="btn-toggle" id="lpToggleUpload" title="展开/收起">
+                        <svg width="14" height="14" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><path d="M18 15l-6-6-6 6"/></svg>
+                    </button>
+                </div>
+                <div class="lp-upload-wrap" id="lpUploadWrap">
+                    <div class="upload-drop-zone" id="uploadDropZone">
+                        <input type="file" id="uploadFileInput" accept=".txt,.md,.pdf,.docx" multiple>
+                        <div class="drop-zone-inner">
+                            <svg width="36" height="36" viewBox="0 0 24 24" fill="none" stroke="var(--text-muted)" stroke-width="1.2">
+                                <path d="M21 15v4a2 2 0 01-2 2H5a2 2 0 01-2-2v-4M7 10l5-5 5 5M12 5v12"/></svg>
+                            <span>拖拽文件到此处或<button type="button" class="drop-zone-btn" id="browseFilesBtn">点击上传</button></span>
+                            <span class="drop-zone-hint">支持 txt、md、pdf、docx</span>
+                        </div>
+                    </div>
+                    <div class="upload-file-list" id="uploadFileList"></div>
+                </div>
+            </div>
+
+            <!-- 提交按钮区（固定底部） -->
+            <div class="lesson-submit-bar">
+                <button class="btn-generate" id="btnGenerate">
+                    <svg width="16" height="16" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><path d="M12 2L2 7l10 5 10-5-10-5z"/><path d="M2 17l10 5 10-5"/><path d="M2 12l10 5 10-5"/></svg>
+                    生成教案
+                </button>
+            </div>
+
+            <!-- 教案结果区域 -->
+            <div class="lesson-result" id="lessonResult" style="display:none">
+                <div class="chat-body" id="lessonMessages"></div>
+            </div>
+        </div>
+
+        <!-- ===== 教案编辑工作台（全屏覆盖） ===== -->
+        <div class="workbench" id="workbench" style="display:none">
+            <div class="wb-header">
+                <span class="wb-title">教案编辑</span>
+                <div class="wb-header-actions">
+                    <button class="wb-btn" id="wbPrint">打印 PDF</button>
+                    <button class="wb-btn wb-btn-secondary" id="wbClose">返回</button>
+                </div>
+            </div>
+            <div class="wb-body">
+                <div class="wb-outline" id="wbOutline"></div>
+                <div class="wb-content" id="wbContent"></div>
+            </div>
+        </div>
+
+    </main>
+</div>
+
+<!-- ============ 教案生成进度弹窗 ============ -->
+<div class="progress-modal" id="progressModal" style="display:none">
+    <div class="progress-modal-mask"></div>
+    <div class="progress-modal-card">
+        <div class="pm-header">
+            <svg width="20" height="20" viewBox="0 0 64 64" class="pm-logo">
+                <rect width="64" height="64" rx="14" fill="#f5f0eb"/>
+                <path d="M32 14 L20 20 V44 L32 38 L44 44 V20 Z" fill="none" stroke="#c48650" stroke-width="2" stroke-linejoin="round"/>
+                <line x1="32" y1="14" x2="32" y2="38" stroke="#c48650" stroke-width="1.5"/>
+            </svg>
+            <span class="pm-title">教案生成中</span>
+            <button class="pm-close" id="pmClose" style="display:none">&times;</button>
+        </div>
+        <div class="pm-body" id="pmBody">
+            <div class="pm-stage" data-stage="analysis">
+                <span class="pm-stage-icon pending"><svg width="16" height="16" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><circle cx="12" cy="12" r="10"/></svg></span>
+                <span class="pm-stage-label">教学分析</span>
+                <span class="pm-stage-status">等待中</span>
+            </div>
+            <div class="pm-stage" data-stage="design">
+                <span class="pm-stage-icon pending"><svg width="16" height="16" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><circle cx="12" cy="12" r="10"/></svg></span>
+                <span class="pm-stage-label">教学设计</span>
+                <span class="pm-stage-status">等待中</span>
+            </div>
+            <div class="pm-stage" data-stage="development">
+                <span class="pm-stage-icon pending"><svg width="16" height="16" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><circle cx="12" cy="12" r="10"/></svg></span>
+                <span class="pm-stage-label">教学过程</span>
+                <span class="pm-stage-status">等待中</span>
+            </div>
+            <div class="pm-stage" data-stage="review">
+                <span class="pm-stage-icon pending"><svg width="16" height="16" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><circle cx="12" cy="12" r="10"/></svg></span>
+                <span class="pm-stage-label">质量评估</span>
+                <span class="pm-stage-status">等待中</span>
+            </div>
+            <div class="pm-stage" data-stage="format">
+                <span class="pm-stage-icon pending"><svg width="16" height="16" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><circle cx="12" cy="12" r="10"/></svg></span>
+                <span class="pm-stage-label">排版渲染</span>
+                <span class="pm-stage-status">等待中</span>
+            </div>
+        </div>
+        <div class="pm-footer" id="pmFooter" style="display:none">
+            <button class="wb-btn" id="pmViewResult">查看教案</button>
+            <button class="wb-btn wb-btn-secondary" id="pmCloseResult">关闭</button>
+        </div>
+    </div>
+</div>
+
+<script src="app.js"></script>
+</body>
+</html>

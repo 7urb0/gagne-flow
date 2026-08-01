@@ -1,0 +1,222 @@
+server:
+  port: ${SERVER_PORT:9900}
+  servlet:
+    encoding:
+      charset: UTF-8
+      enabled: true
+      force: true
+
+# CORS 跨域白名单（生产环境改为具体域名）
+cors:
+  allowed-origins: ${CORS_ALLOWED_ORIGINS:http://localhost:9900,http://localhost:5173}
+
+# =============================================================================
+# 会话分级记忆配置
+# =============================================================================
+gagneflow:
+  session:
+    max-idle: 24h
+    max-window-size: 6
+  memory:
+    max-history-tokens: 3000
+    max-window-tokens: 2000
+    max-summary-tokens: 500
+    summary-trigger-pairs: 5
+    summary-interval-pairs: 3
+  k12:
+    path: lesson-plan-docs/k12_curriculum.json
+  auth:
+    jwt-secret: ${JWT_SECRET}  # P0修复: 强制从环境变量读取，移除不安全默认值
+  pool:
+    core-size: 10
+    max-size: 50
+    queue-capacity: 200
+  lesson-plan:
+    addie-enabled: true
+    k12-index-enabled: ${K12_INDEX_ENABLED:true}
+  pipeline:
+    # ADDIE 流水线阶段顺序（可增删调序）
+    stages:
+      - analysis
+      - design
+      - development
+      - review
+      - format
+  token-counter:
+    # 启动时调用 DashScope tokenizer API 校准字符→token 倍率
+    calibrate: true
+  # R3: Prompt 版本管理
+  prompts:
+    path: agent-config/prompts
+  prompt:
+    experiment:
+      enabled: false
+      splits: {}
+
+# =============================================================================
+# Redis: 会话持久化 + 缓存中间层
+# =============================================================================
+spring:
+  security:
+    filter:
+      # 仅 REQUEST + ERROR 经过安全过滤器，ASYNC 分发跳过
+      # SSE 流式响应在初次 REQUEST 中已完成鉴权，异步写入不需要重复校验
+      dispatcher-types: request, error
+  datasource:
+    url: jdbc:mysql://localhost:3306/gagneflow?useSSL=false&allowPublicKeyRetrieval=true&serverTimezone=Asia/Shanghai&characterEncoding=UTF-8
+    driver-class-name: com.mysql.cj.jdbc.Driver
+    # L6修复: 已移除默认值，生产环境必须通过环境变量设置
+    # 本地开发请使用 dev profile: --spring.profiles.active=dev 或在 IDE 中设置
+    username: ${DB_USERNAME}
+    password: ${DB_PASSWORD}
+  jpa:
+    hibernate:
+      ddl-auto: update
+    show-sql: false
+    properties:
+      hibernate:
+        dialect: org.hibernate.dialect.MySQLDialect
+  data:
+    redis:
+      host: ${REDIS_HOST:localhost}
+      port: ${REDIS_PORT:6379}
+      password: ${REDIS_PASSWORD:}
+      timeout: 5s
+      lettuce:
+        pool:
+          max-active: 16
+          max-idle: 8
+          min-idle: 4
+  servlet:
+    multipart:
+      max-file-size: 50MB
+      max-request-size: 100MB
+  session:
+    store-type: redis
+    timeout: 30m
+    redis:
+      namespace: gagneflow:session
+      flush-mode: on_save
+  ai:
+    dashscope:
+      api-key: ${DASHSCOPE_API_KEY}
+      chat:
+        options:
+          timeout: 180000
+      retry:
+        max-attempts: 3
+        backoff:
+          initial-interval: 2000
+          multiplier: 2
+          max-interval: 10000
+
+    mcp:
+      client:
+        # 显式禁用 MCP client，避免未配置可用端点时（如 .env 误设 MCP_ENABLED=true）
+        # 启动连接外部 MCP 服务导致 20s 超时 Bean 创建失败；需要时再按需开启
+        enabled: false
+        name: tencent-mcp-server
+        version: 1.0.0
+        request-timeout: 60s
+        type: ASYNC
+        sse:
+          connections:
+            tencent-cls:
+              url: https://mcp-api.tencent-cloud.com
+              sse-endpoint: ${MCP_CLS_SSE_ENDPOINT:/sse/placeholder}
+
+# =============================================================================
+# 文件上传
+# =============================================================================
+file:
+  upload:
+    path: ${FILE_UPLOAD_PATH:./uploads}
+    allowed-extensions: ${FILE_UPLOAD_ALLOWED_EXTENSIONS:txt,md,pdf,docx}
+
+# =============================================================================
+# Actuator 健康检查
+# =============================================================================
+management:
+  endpoints:
+    web:
+      exposure:
+        include: health,info,metrics
+  endpoint:
+    health:
+      show-details: always
+  simple:
+    metrics:
+      export:
+        enabled: true
+
+# =============================================================================
+# Swagger/OpenAPI 文档
+# =============================================================================
+springdoc:
+  api-docs:
+    path: /api-docs
+  swagger-ui:
+    path: /swagger-ui.html
+
+# =============================================================================
+# Resilience4j 熔断器
+# =============================================================================
+resilience4j:
+  circuitbreaker:
+    instances:
+      milvus:
+        sliding-window-size: 10
+        failure-rate-threshold: 50
+        wait-duration-in-open-state: 30s
+      dashscope:
+        sliding-window-size: 10
+        failure-rate-threshold: 50
+        wait-duration-in-open-state: 60s
+
+# =============================================================================
+# Milvus 向量数据库
+# =============================================================================
+milvus:
+  host: ${MILVUS_HOST:localhost}
+  port: ${MILVUS_PORT:19530}
+  username: ${MILVUS_USERNAME:}
+  password: ${MILVUS_PASSWORD:}
+  database: ${MILVUS_DATABASE:default}
+  timeout: 10000
+  search:
+    nprobe: ${MILVUS_NPROBE:16}
+    nprobe-max: ${MILVUS_NPROBE_MAX:64}
+    nprobe-adaptive: true
+
+# =============================================================================
+# 阿里云 DashScope 配置
+# 注: API Key 已统一使用 spring.ai.dashscope.api-key 路径
+# =============================================================================
+dashscope:
+  embedding:
+    model: ${DASHSCOPE_EMBEDDING_MODEL:text-embedding-v4}
+  rerank:
+    model: ${DASHSCOPE_RERANK_MODEL:gte-rerank}
+    top-n: ${DASHSCOPE_RERANK_TOP_N:3}
+    search-top-k: ${DASHSCOPE_RERANK_SEARCH_TOP_K:15}
+  summary:
+    model: ${DASHSCOPE_SUMMARY_MODEL:qwen-plus}
+
+# =============================================================================
+# 文档分片 & RAG 配置
+# =============================================================================
+document:
+  chunk:
+    max-size: ${DOCUMENT_CHUNK_MAX_SIZE:800}
+    overlap: ${DOCUMENT_CHUNK_OVERLAP:160}
+
+rag:
+  top-k: ${RAG_TOP_K:3}
+  model: ${RAG_MODEL:qwen-max-latest}
+  relevance-threshold: ${RAG_RELEVANCE_THRESHOLD:0.3}
+  query-rewrite:
+    enabled: ${RAG_QUERY_REWRITE_ENABLED:true}
+    # L4修复: LLM 查询改写 — 默认关闭，建议在验证规则改写效果不足时再开启
+    llm-enabled: ${RAG_QUERY_REWRITE_LLM_ENABLED:false}
+    llm-model: ${RAG_QUERY_REWRITE_LLM_MODEL:qwen-turbo}
+    model: ${RAG_QUERY_REWRITE_MODEL:qwen-plus}

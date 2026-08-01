@@ -1,0 +1,45 @@
+<?xml version="1.0"?>
+<!DOCTYPE module PUBLIC "-//Checkstyle//DTD Checkstyle Configuration 1.3//EN"
+    "https://checkstyle.org/dtds/configuration_1_3.dtd">
+
+<!--
+  GagneFlow Checkstyle — 只对 service/memory/ 模块启用，逐步扩展到全项目
+-->
+<module name="Checker">
+    <property name="severity" value="warning"/>
+    <property name="charset" value="UTF-8"/>
+
+    <!-- 文件级检查 -->
+    <module name="FileTabCharacter"/>
+    <module name="NewlineAtEndOfFile"/>
+
+    <module name="TreeWalker">
+        <!-- 命名规范 -->
+        <module name="LocalVariableName"/>
+        <module name="MethodName"/>
+        <module name="PackageName"/>
+        <module name="TypeName"/>
+        <module name="ConstantName">
+            <property name="format" value="^[A-Z][A-Z0-9]*(_[A-Z0-9]+)*$"/>
+        </module>
+
+        <!-- 导入 -->
+        <module name="UnusedImports"/>
+
+        <!-- 代码风格 -->
+        <module name="LeftCurly"/>
+        <module name="RightCurly"/>
+        <module name="NeedBraces"/>
+        <module name="WhitespaceAround"/>
+        <module name="EmptyBlock"/>
+        <module name="EmptyLineSeparator">
+            <property name="allowNoEmptyLineBetweenFields" value="true"/>
+        </module>
+
+        <!-- 长度限制（宽松） -->
+        <module name="LineLength">
+            <property name="max" value="140"/>
+            <property name="ignorePattern" value="^package|^import|@see|@link"/>
+        </module>
+    </module>
+</module>

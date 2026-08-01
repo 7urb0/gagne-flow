@@ -1,0 +1,3 @@
+这是一个纯文本测试文件。
+用于验证 PlainTextDocumentReader 的读取功能。
+包含中文和 ASCII 字符: Hello World 12345.

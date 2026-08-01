@@ -1,0 +1,42 @@
+<?xml version="1.0" encoding="UTF-8"?>
+<settings xmlns="http://maven.apache.org/SETTINGS/1.0.0"
+          xmlns:xsi="http://www.w3.org/2001/XMLSchema-instance"
+          xsi:schemaLocation="http://maven.apache.org/SETTINGS/1.0.0 http://maven.apache.org/xsd/settings-1.0.0.xsd">
+    <mirrors>
+        <mirror>
+            <id>central</id>
+            <url>https://repo1.maven.org/maven2</url>
+            <mirrorOf>central</mirrorOf>
+        </mirror>
+    </mirrors>
+    <profiles>
+        <profile>
+            <id>langchain4j</id>
+            <repositories>
+                <repository>
+                    <id>central</id>
+                    <url>https://repo1.maven.org/maven2</url>
+                </repository>
+                <repository>
+                    <id>langchain4j-snapshots</id>
+                    <name>LangChain4J Snapshots</name>
+                    <url>https://oss.sonatype.org/content/repositories/snapshots</url>
+                    <snapshots>
+                        <enabled>true</enabled>
+                    </snapshots>
+                </repository>
+                <repository>
+                    <id>langchain4j-releases</id>
+                    <name>LangChain4J Releases</name>
+                    <url>https://oss.sonatype.org/service/local/staging/deploy/maven2</url>
+                    <snapshots>
+                        <enabled>false</enabled>
+                    </snapshots>
+                </repository>
+            </repositories>
+        </profile>
+    </profiles>
+    <activeProfiles>
+        <activeProfile>langchain4j</activeProfile>
+    </activeProfiles>
+</settings>

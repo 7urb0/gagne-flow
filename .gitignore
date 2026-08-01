@@ -1,0 +1,76 @@
+target/
+!.mvn/wrapper/maven-wrapper.jar
+!**/src/main/**/target/
+!**/src/test/**/target/
+
+### IntelliJ IDEA ###
+.idea/modules.xml
+.idea/jarRepositories.xml
+.idea/compiler.xml
+.idea/libraries/
+.idea/CopilotChatHistory.xml
+.idea/CopilotChatTabs.xml
+*.iws
+*.iml
+*.ipr
+.idea/*
+### Eclipse ###
+.apt_generated
+.classpath
+.factorypath
+.project
+.settings
+.springBeans
+.sts4-cache
+
+### NetBeans ###
+/nbproject/private/
+/nbbuild/
+/dist/
+/nbdist/
+/.nb-gradle/
+build/
+!**/src/main/**/build/
+!**/src/test/**/build/
+
+### VS Code ###
+.vscode/
+
+### Mac OS ###
+.DS_Store
+
+### Environment Config ###
+.env
+.env.local
+.env.*.local
+
+### Application Logs ###
+*.log
+app.log
+logs/
+
+### Upload Files ###
+uploads/
+
+### Temp Scripts ###
+*.sh
+*.py
+
+### docker
+/volumes
+/server.pid
+
+### H2 database (development artifacts)
+*.mv.db
+*.trace.db
+*.backup.zip
+data/
+
+### WorkBuddy workspace files ###
+.workbuddy/
+.reasonix/
+reasonix.toml
+
+### Test output ###
+test-output.txt
+test-output.log
