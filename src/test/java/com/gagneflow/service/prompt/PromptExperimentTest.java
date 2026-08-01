@@ -28,7 +28,7 @@ class PromptExperimentTest {
         @DisplayName("disabled=false → 始终返回 activeVersion")
         void disabled_shouldReturnActiveVersion() {
             experiment.setEnabled(false);
-            int result = experiment.selectVersion("addie_review", 2, 42L);
+            int result = experiment.selectVersion("addrf_review", 2, 42L);
             assertEquals(2, result);
         }
 
@@ -37,10 +37,10 @@ class PromptExperimentTest {
         void nullUserId_shouldReturnActiveVersion() {
             experiment.setEnabled(true);
             Map<String, Map<Integer, Double>> splits = new HashMap<>();
-            splits.put("addie_review", Map.of(1, 0.7, 2, 0.3));
+            splits.put("addrf_review", Map.of(1, 0.7, 2, 0.3));
             experiment.setSplits(splits);
 
-            assertEquals(2, experiment.selectVersion("addie_review", 2, null));
+            assertEquals(2, experiment.selectVersion("addrf_review", 2, null));
         }
 
         @Test
@@ -48,10 +48,10 @@ class PromptExperimentTest {
         void anonymousUser_shouldReturnActiveVersion() {
             experiment.setEnabled(true);
             Map<String, Map<Integer, Double>> splits = new HashMap<>();
-            splits.put("addie_review", Map.of(1, 0.7, 2, 0.3));
+            splits.put("addrf_review", Map.of(1, 0.7, 2, 0.3));
             experiment.setSplits(splits);
 
-            assertEquals(2, experiment.selectVersion("addie_review", 2, 0L));
+            assertEquals(2, experiment.selectVersion("addrf_review", 2, 0L));
         }
 
         @Test
@@ -60,7 +60,7 @@ class PromptExperimentTest {
             experiment.setEnabled(true);
             experiment.setSplits(new HashMap<>());
 
-            assertEquals(2, experiment.selectVersion("addie_review", 2, 42L));
+            assertEquals(2, experiment.selectVersion("addrf_review", 2, 42L));
         }
     }
 
@@ -71,7 +71,7 @@ class PromptExperimentTest {
         private void setupTestSplit() {
             experiment.setEnabled(true);
             Map<String, Map<Integer, Double>> splits = new HashMap<>();
-            splits.put("addie_review", new HashMap<>(Map.of(1, 0.7, 2, 0.3)));
+            splits.put("addrf_review", new HashMap<>(Map.of(1, 0.7, 2, 0.3)));
             experiment.setSplits(splits);
         }
 
@@ -79,9 +79,9 @@ class PromptExperimentTest {
         @DisplayName("同一 userId 多次调用返回同一版本")
         void sameUserId_shouldReturnSameVersion() {
             setupTestSplit();
-            int first = experiment.selectVersion("addie_review", 2, 42L);
-            int second = experiment.selectVersion("addie_review", 2, 42L);
-            int third = experiment.selectVersion("addie_review", 2, 42L);
+            int first = experiment.selectVersion("addrf_review", 2, 42L);
+            int second = experiment.selectVersion("addrf_review", 2, 42L);
+            int third = experiment.selectVersion("addrf_review", 2, 42L);
 
             assertEquals(first, second);
             assertEquals(second, third);
@@ -96,7 +96,7 @@ class PromptExperimentTest {
             int total = 200;
 
             for (long uid = 1; uid <= total; uid++) {
-                int version = experiment.selectVersion("addie_review", 2, uid);
+                int version = experiment.selectVersion("addrf_review", 2, uid);
                 if (version == 1) v1Count++;
                 else if (version == 2) v2Count++;
             }

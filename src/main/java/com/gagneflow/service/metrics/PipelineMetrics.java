@@ -21,9 +21,9 @@ public class PipelineMetrics {
     private final Counter citationLossCounter;
     private final Counter summaryCompressionCounter;
     private final Counter contextBuildCounter;
-    private final Counter addieStageCounter;
+    private final Counter addrfStageCounter;
     private final Counter hitlTriggerCounter;
-    private final Timer addieStageTimer;
+    private final Timer addrfStageTimer;
 
     public PipelineMetrics(MeterRegistry meterRegistry) {
         this.ragSearchCounter = Counter.builder("gagneflow.rag.search.total")
@@ -38,12 +38,12 @@ public class PipelineMetrics {
                 .description("Summary compression triggers").register(meterRegistry);
         this.contextBuildCounter = Counter.builder("gagneflow.memory.context.build")
                 .description("Context build operations").register(meterRegistry);
-        this.addieStageCounter = Counter.builder("gagneflow.addie.stage.total")
-                .description("Total ADDIE stage executions").register(meterRegistry);
+        this.addrfStageCounter = Counter.builder("gagneflow.addrf.stage.total")
+                .description("Total ADDRF stage executions").register(meterRegistry);
         this.hitlTriggerCounter = Counter.builder("gagneflow.hitl.trigger.total")
                 .description("Total HITL triggers (human review required)").register(meterRegistry);
-        this.addieStageTimer = Timer.builder("gagneflow.addie.stage.duration")
-                .description("ADDIE stage execution duration").register(meterRegistry);
+        this.addrfStageTimer = Timer.builder("gagneflow.addrf.stage.duration")
+                .description("ADDRF stage execution duration").register(meterRegistry);
     }
 
     public void recordRagSearch(String query, long durationMs, int candidateCount, int finalCount, double avgRelevance) {
@@ -80,10 +80,10 @@ public class PipelineMetrics {
                 sessionId, shortTermTokens, ltmChars, totalTokens);
     }
 
-    public void recordAddieStage(String stage, long durationMs, int outputChars) {
-        addieStageCounter.increment();
-        addieStageTimer.record(Duration.ofMillis(durationMs));
-        logger.info("[ADDIE-METRIC] stage={} duration={}ms output={}chars", stage, durationMs, outputChars);
+    public void recordAddrfStage(String stage, long durationMs, int outputChars) {
+        addrfStageCounter.increment();
+        addrfStageTimer.record(Duration.ofMillis(durationMs));
+        logger.info("[ADDRF-METRIC] stage={} duration={}ms output={}chars", stage, durationMs, outputChars);
     }
 
     public void recordHitlTrigger(String subject, Long userId) {

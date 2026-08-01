@@ -208,18 +208,18 @@ class ConcurrencyEdgeCaseTest {
     }
 
     // ==================================================================
-    // AddiePipeline Result Edge Cases
+    // AddrfPipeline Result Edge Cases
     // ==================================================================
 
     @Nested
-    @DisplayName("AddiePipeline Result Edge Cases")
-    class AddiePipelineResultEdges {
+    @DisplayName("AddrfPipeline Result Edge Cases")
+    class AddrfPipelineResultEdges {
 
         @Test
         @DisplayName("extractScore with null input")
         void extractScoreNull() throws Exception {
             var pipeline = newPipeline();
-            var method = com.gagneflow.service.lesson.AddiePipeline.class
+            var method = com.gagneflow.service.lesson.AddrfPipeline.class
                     .getDeclaredMethod("extractScore", String.class);
             method.setAccessible(true);
 
@@ -231,7 +231,7 @@ class ConcurrencyEdgeCaseTest {
         @DisplayName("extractScore with no numeric content")
         void extractScoreNoNumber() throws Exception {
             var pipeline = newPipeline();
-            var method = com.gagneflow.service.lesson.AddiePipeline.class
+            var method = com.gagneflow.service.lesson.AddrfPipeline.class
                     .getDeclaredMethod("extractScore", String.class);
             method.setAccessible(true);
 
@@ -243,7 +243,7 @@ class ConcurrencyEdgeCaseTest {
         @DisplayName("extractScore with 100")
         void extractScoreMax() throws Exception {
             var pipeline = newPipeline();
-            var method = com.gagneflow.service.lesson.AddiePipeline.class
+            var method = com.gagneflow.service.lesson.AddrfPipeline.class
                     .getDeclaredMethod("extractScore", String.class);
             method.setAccessible(true);
 
@@ -255,7 +255,7 @@ class ConcurrencyEdgeCaseTest {
         @DisplayName("extractScore with out-of-range value clamps to 0-100")
         void extractScoreOutOfRange() throws Exception {
             var pipeline = newPipeline();
-            var method = com.gagneflow.service.lesson.AddiePipeline.class
+            var method = com.gagneflow.service.lesson.AddrfPipeline.class
                     .getDeclaredMethod("extractScore", String.class);
             method.setAccessible(true);
 
@@ -270,7 +270,7 @@ class ConcurrencyEdgeCaseTest {
         @DisplayName("extractFeedback with null input")
         void extractFeedbackNull() throws Exception {
             var pipeline = newPipeline();
-            var method = com.gagneflow.service.lesson.AddiePipeline.class
+            var method = com.gagneflow.service.lesson.AddrfPipeline.class
                     .getDeclaredMethod("extractFeedback", String.class);
             method.setAccessible(true);
 
@@ -282,7 +282,7 @@ class ConcurrencyEdgeCaseTest {
         @DisplayName("extractFeedback with content but no feedback markers")
         void extractFeedbackNoMarkers() throws Exception {
             var pipeline = newPipeline();
-            var method = com.gagneflow.service.lesson.AddiePipeline.class
+            var method = com.gagneflow.service.lesson.AddrfPipeline.class
                     .getDeclaredMethod("extractFeedback", String.class);
             method.setAccessible(true);
 
@@ -294,7 +294,7 @@ class ConcurrencyEdgeCaseTest {
         @DisplayName("dedupContent removes duplicate lines")
         void dedupContentRemovesDupes() throws Exception {
             var pipeline = newPipeline();
-            var method = com.gagneflow.service.lesson.AddiePipeline.class
+            var method = com.gagneflow.service.lesson.AddrfPipeline.class
                     .getDeclaredMethod("dedupContent", String.class);
             method.setAccessible(true);
 
@@ -313,9 +313,9 @@ class ConcurrencyEdgeCaseTest {
     // Concurrent Collection Safety
     // ==================================================================
 
-    /** 用带参构造器创建 AddiePipeline 实例（无参构造器不存在） */
-    private static com.gagneflow.service.lesson.AddiePipeline newPipeline() {
-        return new com.gagneflow.service.lesson.AddiePipeline(
+    /** 用带参构造器创建 AddrfPipeline 实例（无参构造器不存在） */
+    private static com.gagneflow.service.lesson.AddrfPipeline newPipeline() {
+        return new com.gagneflow.service.lesson.AddrfPipeline(
                 null, null, null, null, null, null, null,
                 new com.gagneflow.config.PipelineStageConfig(), null, null);
     }

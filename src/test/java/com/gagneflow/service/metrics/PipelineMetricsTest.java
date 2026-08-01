@@ -73,14 +73,14 @@ class PipelineMetricsTest {
     }
 
     @Nested
-    @DisplayName("ADDIE 流水线指标")
-    class AddieMetricsTests {
+    @DisplayName("ADDRF 流水线指标")
+    class AddrfMetricsTests {
 
         @Test
-        @DisplayName("recordAddieStage 不抛异常")
-        void recordAddieStage_shouldNotThrow() {
+        @DisplayName("recordAddrfStage 不抛异常")
+        void recordAddrfStage_shouldNotThrow() {
             assertDoesNotThrow(() ->
-                    metrics.recordAddieStage("analysis", 15000L, 2048));
+                    metrics.recordAddrfStage("analysis", 15000L, 2048));
         }
     }
 }

@@ -26,7 +26,7 @@ import com.gagneflow.service.chat.ChatService;
 import com.gagneflow.service.chat.ChatSession;
 import com.gagneflow.service.chat.ChatSessionService;
 import com.gagneflow.service.document.SubjectFormatLoader;
-import com.gagneflow.service.lesson.AddiePipeline;
+import com.gagneflow.service.lesson.AddrfPipeline;
 import com.gagneflow.service.lesson.FormatTool;
 import com.gagneflow.service.memory.ConversationMemoryManager;
 import com.gagneflow.service.memory.TokenCounter;
@@ -50,7 +50,7 @@ import org.springframework.web.servlet.mvc.method.annotation.SseEmitter;
 
 /**
  * 教案生成控制器 — 从 ChatController 拆分
- * 职责：ADDIE 教案生成流水线、PDF 导出、Copilot 人机协同交互
+ * 职责：ADDRF 教案生成流水线、PDF 导出、Copilot 人机协同交互
  */
 @RestController
 @RequestMapping("/api")
@@ -60,7 +60,7 @@ public class LessonController {
     @Autowired
     private FormatTool formatTool;
     @Autowired
-    private AddiePipeline addiePipeline;
+    private AddrfPipeline addrfPipeline;
     @Autowired
     private ChatService chatService;
     @Autowired
@@ -135,7 +135,7 @@ public class LessonController {
         }, 30L, 30L, TimeUnit.SECONDS);
         this.executor.execute(() -> {
             try {
-                this.executeAddiePipeline(req, emitter, uid, sid, lockKey, finalRedisLocked);
+                this.executeAddrfPipeline(req, emitter, uid, sid, lockKey, finalRedisLocked);
             } finally {
                 heartbeatExecutor.shutdownNow();
             }
@@ -145,7 +145,7 @@ public class LessonController {
 
     private boolean tryRedisLock(String lockKey) {
         try {
-            // H-10修复: 增加 TTL 适配 ADDIE 完整流程（异步 Review 240s×2 + 生成时间）
+            // H-10修复: 增加 TTL 适配 ADDRF 完整流程（异步 Review 240s×2 + 生成时间）
             return Boolean.TRUE.equals(
                     this.stringRedisTemplate.opsForValue()
                             .setIfAbsent(lockKey, "1", Duration.ofSeconds(600L)));
@@ -155,7 +155,7 @@ public class LessonController {
         }
     }
 
-    private void executeAddiePipeline(LessonPlanRequest req, SseEmitter emitter,
+    private void executeAddrfPipeline(LessonPlanRequest req, SseEmitter emitter,
                                        Long uid, String sid, String lockKey, boolean redisLocked) {
         try {
             DashScopeChatModel model = DashScopeChatModel.builder().dashScopeApi(this.dashScopeApi)
@@ -164,17 +164,17 @@ public class LessonController {
                             .withTemperature(Double.valueOf(0.3))
                             .withMaxToken(Integer.valueOf(8000))
                             .withTopP(Double.valueOf(0.9)).build()).build();
-            String sessionCtx = this.buildSessionContextForAddie(uid, sid);
-            AddiePipeline.AddieResult result = this.addiePipeline.execute(
+            String sessionCtx = this.buildSessionContextForAddrf(uid, sid);
+            AddrfPipeline.AddrfResult result = this.addrfPipeline.execute(
                     req, model, emitter, req.getMode(), this.copilotQueues, sessionCtx, uid);
             String html = result.html != null ? result.html : "<p>生成失败</p>";
             // 等待 Review 后台线程完成，拿到真实评分与 HITL 标志（score 由 asyncReview 异步写入）
-            this.addiePipeline.awaitReview(result, 240);
+            this.addrfPipeline.awaitReview(result, 240);
             // HITL: 教案质量人工审核（必须在 awaitReview 之后判断，否则 score/needsHumanReview 尚未就绪）
             if (result.needsHumanReview) {
                 String hitlMsg = "\u26a0 \u7cfb\u7edf\u68c0\u6d4b\u5230\u8be5\u6559\u6848\u53ef\u80fd\u5b58\u5728\u8d28\u91cf\u95ee\u9898\uff08\u8bc4\u5206: "
                     + result.score + "\uff09\uff0c\u5efa\u8bae\u4eba\u5de5\u590d\u6838\u540e\u4f7f\u7528\u3002";
-                logger.warn("[ADDIE-HITL] 教案需人工审核: uid={}, subject={}, score={}",
+                logger.warn("[ADDRF-HITL] 教案需人工审核: uid={}, subject={}, score={}",
                     uid, req.getSubject(), result.score);
                 // 将提醒注入 HTML
                 html = "<div class=\"hitl-warning\" style=\"border:2px solid #ff4444;padding:12px;margin:12px 0;background:#fff5f5;border-radius:8px;\">"
@@ -188,7 +188,7 @@ public class LessonController {
                 try {
                     this.vectorIndexService.indexLessonPlan(html, uid, req.getSubject(), result.score);
                 } catch (Exception e) {
-                    logger.warn("[ADDIE] 教案回灌失败（不影响主流程）: {}", e.getMessage());
+                    logger.warn("[ADDRF] 教案回灌失败（不影响主流程）: {}", e.getMessage());
                 }
             }
             String summary = this.extractLessonSummary(result);
@@ -206,7 +206,7 @@ public class LessonController {
             this.tryTriggerSummary(uid, sid);
             this.sendAndComplete(emitter, SseMessage.done());
         } catch (Exception e) {
-            logger.error("ADDIE lesson plan failed: {}", e.getMessage(), e);
+            logger.error("ADDRF lesson plan failed: {}", e.getMessage(), e);
             this.sendAndComplete(emitter, SseMessage.error(
                     e.getMessage() != null ? e.getMessage() : "lesson plan generation failed"));
         } finally {
@@ -221,7 +221,7 @@ public class LessonController {
         }
     }
 
-    private String extractLessonSummary(AddiePipeline.AddieResult result) {
+    private String extractLessonSummary(AddrfPipeline.AddrfResult result) {
         StringBuilder sb = new StringBuilder("[教案] ");
         if (result.analysis != null) {
             String a = result.analysis.length() > 200 ? result.analysis.substring(0, 200) : result.analysis;
@@ -235,7 +235,7 @@ public class LessonController {
         return sb.toString();
     }
 
-    private String buildSessionContextForAddie(Long userId, String currentSessionId) {
+    private String buildSessionContextForAddrf(Long userId, String currentSessionId) {
         StringBuilder ctx = new StringBuilder();
         List<Map<String, Object>> sessions = this.chatSessionService.getUserSessions(userId);
         if (sessions != null) {

@@ -29,10 +29,10 @@ public class PromptLoader {
         this.preloadPrompt("v1/retrieval");
         this.preloadPrompt("v1/review");
         this.preloadPrompt("v1/supervisor");
-        this.preloadPrompt("v1/addie/addie_analysis");
-        this.preloadPrompt("v1/addie/addie_design");
-        this.preloadPrompt("v1/addie/addie_development");
-        this.preloadPrompt("v1/addie/addie_review");
+        this.preloadPrompt("v1/addrf/addrf_analysis");
+        this.preloadPrompt("v1/addrf/addrf_design");
+        this.preloadPrompt("v1/addrf/addrf_development");
+        this.preloadPrompt("v1/addrf/addrf_review");
         logger.info("PromptLoader \u521d\u59cb\u5316\u5b8c\u6210\uff0c\u5df2\u52a0\u8f7d {} \u4e2a\u63d0\u793a\u8bcd", (Object)this.cache.size());
     }
 

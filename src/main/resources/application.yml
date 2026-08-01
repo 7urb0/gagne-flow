@@ -32,10 +32,10 @@ gagneflow:
     max-size: 50
     queue-capacity: 200
   lesson-plan:
-    addie-enabled: true
+    addrf-enabled: true
     k12-index-enabled: ${K12_INDEX_ENABLED:true}
   pipeline:
-    # ADDIE 流水线阶段顺序（可增删调序）
+    # ADDRF 流水线阶段顺序（可增删调序）
     stages:
       - analysis
       - design

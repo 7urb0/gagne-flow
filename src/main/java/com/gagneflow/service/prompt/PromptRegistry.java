@@ -153,11 +153,11 @@ public class PromptRegistry {
     }
 
     private String loadFallback(String promptName) {
-        // v1 迁移后文件位于 v1/addie/ 或 v1/ 下，PromptLoader 缓存 key 带版本前缀；
+        // v1 迁移后文件位于 v1/addrf/ 或 v1/ 下，PromptLoader 缓存 key 带版本前缀；
         // 依次尝试候选路径，命中任一即返回
         String[] candidates = {
-            "v1/addie/" + promptName,
-            "addie/" + promptName,
+            "v1/addrf/" + promptName,
+            "addrf/" + promptName,
             "v1/" + promptName,
             promptName
         };

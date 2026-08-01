@@ -16,7 +16,7 @@ public class PromptExperiment {
     /** 是否启用 A/B 实验 */
     private boolean enabled = false;
 
-    /** { promptName: { versionNumber: ratio } } 例: {"addie_review": {1: 0.7, 2: 0.3}} */
+    /** { promptName: { versionNumber: ratio } } 例: {"addrf_review": {1: 0.7, 2: 0.3}} */
     private Map<String, Map<Integer, Double>> splits = new HashMap<>();
 
     public boolean isEnabled() { return enabled; }

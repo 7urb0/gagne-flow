@@ -1,6 +1,6 @@
 # GagneFlow
 
-> 基于 Spring AI Alibaba + DashScope 的 K12 智能教案生成系统 —— RAG 问答 · ADDIE 流水线 · 多轮对话 · 多级记忆
+> 基于 Spring AI Alibaba + DashScope 的 K12 智能教案生成系统 —— RAG 问答 · ADDRF 流水线 · 多轮对话 · 多级记忆
 
 [![Java](https://img.shields.io/badge/Java-17-orange.svg)](https://adoptium.net/)
 [![Spring Boot](https://img.shields.io/badge/Spring%20Boot-3.3.5-brightgreen.svg)](https://spring.io/projects/spring-boot)
@@ -32,7 +32,7 @@
 GagneFlow 面向 K12 教育场景，提供从教学需求输入到完整教案输出的全链路 AI 能力：
 
 - **智能问答**：基于 Milvus 向量库 + DashScope 重排序的 RAG 多轮流式对话
-- **教案生成**：遵循 ADDIE 教学设计模型，自动生成符合课标的 HTML 教案并导出 PDF
+- **教案生成**：遵循 ADDRF 教学设计模型，自动生成符合课标的 HTML 教案并导出 PDF
 - **文档管理**：支持 PDF / Word / Markdown / TXT 上传，自动分片、向量化入库
 - **会话记忆**：短期窗口 + 摘要压缩 + 长期语义检索的三级记忆体系
 - **人机协作**：Copilot 模式支持阶段暂停、修改指令、继续生成
@@ -53,7 +53,7 @@ GagneFlow 面向 K12 教育场景，提供从教学需求输入到完整教案�
 ├─────────────────────────────────────────────────────────┤
 │                    服务层                                │
 │  ┌──────────────┐  ┌──────────────┐  ┌──────────────┐  │
-│  │ Chat Service │  │ ADDIE        │  │ RAG Pipeline │  │
+│  │ Chat Service │  │ ADDRF        │  │ RAG Pipeline │  │
 │  │ (ReactAgent) │  │ Pipeline     │  │ (Rewrite→    │  │
 │  │              │  │ (5-Stage)    │  │ Search→Rerank│  │
 │  │              │  │              │  │ →Answer)     │  │
@@ -76,7 +76,7 @@ GagneFlow 面向 K12 教育场景，提供从教学需求输入到完整教案�
 
 ## 核心能力
 
-### ADDIE 教案生成流水线
+### ADDRF 教案生成流水线
 
 | 阶段 | 职责 | 输出 |
 |------|------|------|
@@ -152,11 +152,11 @@ GagneFlow/
 │   ├── retrieval.md                #   知识检索 Agent
 │   ├── review.md                   #   教案审查 Agent
 │   ├── decision_guide.md           #   决策类型定义
-│   └── addie/                      #   ADDIE 五阶段 Prompt
-│       ├── addie_analysis.md
-│       ├── addie_design.md
-│       ├── addie_development.md
-│       └── addie_review.md
+│   └── addrf/                      #   ADDRF 五阶段 Prompt
+│       ├── addrf_analysis.md
+│       ├── addrf_design.md
+│       ├── addrf_development.md
+│       └── addrf_review.md
 │
 ├── lesson-plan-docs/               # K12 教学知识库
 │   ├── k12_curriculum.json         #   课标知识 (小/初/高 · 语数英)
@@ -177,8 +177,8 @@ GagneFlow/
 │   │   └── GlobalExceptionHandler  #   全局异常处理
 │   │
 │   ├── service/                    # 业务服务层
-│   │   ├── lesson/                 #   ADDIE 流水线核心
-│   │   │   ├── AddiePipeline.java  #
+│   │   ├── lesson/                 #   ADDRF 流水线核心
+│   │   │   ├── AddrfPipeline.java  #
 │   │   │   └── FormatTool.java     #
 │   │   ├── chat/                   #   智能对话
 │   │   │   ├── ChatService.java    #
@@ -503,7 +503,7 @@ curl -X POST http://localhost:9900/api/files/upload \
 
 ## 核心流程
 
-### ADDIE 教案生成流程
+### ADDRF 教案生成流程
 
 ```
 POST /api/lesson_plan → JVM锁 + Redis锁 → 线程池异步执行
@@ -650,10 +650,10 @@ Prompt 存放在 `agent-config/prompts/`，支持目录级版本：
 agent-config/prompts/
 ├── v1/
 │   ├── supervisor.md
-│   └── addie_analysis.md
+│   └── addrf_analysis.md
 └── v2/
     ├── supervisor.md      # 改进版
-    └── addie_analysis.md  # 改进版
+    └── addrf_analysis.md  # 改进版
 ```
 
 启动时自动 seed 到数据库，可通过 API 热切换活跃版本。
@@ -696,7 +696,7 @@ Checkout → Checkstyle → Unit Test + JaCoCo → Build → Archive
 |------|------|
 | `gagneflow.rag.search.*` | RAG 搜索次数 / 耗时 / 候选数 |
 | `gagneflow.rag.citation.loss` | 引用丢失计数 |
-| `gagneflow.addie.stage.*` | ADDIE 阶段执行次数 / 耗时 |
+| `gagneflow.addrf.stage.*` | ADDRF 阶段执行次数 / 耗时 |
 | `gagneflow.memory.summary.compression` | 摘要压缩触发次数 |
 | `gagneflow.hitl.trigger.total` | HITL 人工审核触发次数 |
 

@@ -14,10 +14,10 @@ import java.util.concurrent.TimeUnit;
 
 import static org.junit.jupiter.api.Assertions.*;
 
-@DisplayName("AddiePipeline unit tests")
-class AddiePipelineTest {
+@DisplayName("AddrfPipeline unit tests")
+class AddrfPipelineTest {
 
-    private final AddiePipeline defaultPipeline = new AddiePipeline(null, null, null, null, null, null, null, new PipelineStageConfig(), null, null);
+    private final AddrfPipeline defaultPipeline = new AddrfPipeline(null, null, null, null, null, null, null, new PipelineStageConfig(), null, null);
 
     // ============================================================
     // extractScore tests
@@ -171,14 +171,14 @@ class AddiePipelineTest {
     @Test
     @DisplayName("dedupContent returns original for null input")
     void dedupContent_NullInput_ReturnsNull() {
-        assertNull(AddiePipeline.dedupContent(null));
+        assertNull(AddrfPipeline.dedupContent(null));
     }
 
     @Test
     @DisplayName("dedupContent returns original for short content below 100 chars")
     void dedupContent_ShortContent_ReturnsOriginal() {
         String shortContent = "This is a short teaching plan.";
-        assertSame(shortContent, AddiePipeline.dedupContent(shortContent));
+        assertSame(shortContent, AddrfPipeline.dedupContent(shortContent));
     }
 
     @Test
@@ -187,7 +187,7 @@ class AddiePipelineTest {
         String content = repeat("**教学目标**\n让学生掌握基础知识。\n", 50) +
                          repeat("**教学目标**\n让学生掌握基础知识，并能灵活运用。\n", 50) +
                          repeat("**教学重难点**\n重点是概念理解。\n", 55);
-        String result = AddiePipeline.dedupContent(content);
+        String result = AddrfPipeline.dedupContent(content);
         assertTrue(result.contains("能灵活运用"), "Should keep longer version of 教学目标");
         assertFalse(result.contains("让学生掌握基础知识。\n**教学目标**"), "Should not show duplicate title markers");
     }
@@ -196,7 +196,7 @@ class AddiePipelineTest {
     @DisplayName("dedupContent returns original when only one section")
     void dedupContent_SingleSection_ReturnsOriginal() {
         String content = repeat("**单一主题**\n", 50) + "这是唯一的内容段落";
-        String result = AddiePipeline.dedupContent(content);
+        String result = AddrfPipeline.dedupContent(content);
         assertTrue(result.contains("单一主题"));
     }
 
@@ -207,7 +207,7 @@ class AddiePipelineTest {
     @Test
     @DisplayName("createDefaultExecutor creates executor with correct core pool size")
     void createDefaultExecutor_CorePoolSize_Is2() {
-        ThreadPoolExecutor executor = AddiePipeline.createDefaultExecutor();
+        ThreadPoolExecutor executor = AddrfPipeline.createDefaultExecutor();
         assertEquals(2, executor.getCorePoolSize());
         executor.shutdown();
     }
@@ -215,7 +215,7 @@ class AddiePipelineTest {
     @Test
     @DisplayName("createDefaultExecutor creates executor with correct max pool size")
     void createDefaultExecutor_MaxPoolSize_Is4() {
-        ThreadPoolExecutor executor = AddiePipeline.createDefaultExecutor();
+        ThreadPoolExecutor executor = AddrfPipeline.createDefaultExecutor();
         assertEquals(4, executor.getMaximumPoolSize());
         executor.shutdown();
     }
@@ -223,7 +223,7 @@ class AddiePipelineTest {
     @Test
     @DisplayName("createDefaultExecutor creates executor with correct keepAlive")
     void createDefaultExecutor_KeepAliveTime_Is60Seconds() {
-        ThreadPoolExecutor executor = AddiePipeline.createDefaultExecutor();
+        ThreadPoolExecutor executor = AddrfPipeline.createDefaultExecutor();
         assertEquals(60L, executor.getKeepAliveTime(TimeUnit.SECONDS));
         executor.shutdown();
     }
@@ -231,20 +231,20 @@ class AddiePipelineTest {
     @Test
     @DisplayName("createDefaultExecutor queue has capacity 50")
     void createDefaultExecutor_Queue_Capacity50() {
-        ThreadPoolExecutor executor = AddiePipeline.createDefaultExecutor();
+        ThreadPoolExecutor executor = AddrfPipeline.createDefaultExecutor();
         assertTrue(executor.getQueue() instanceof LinkedBlockingQueue);
         assertEquals(50, ((LinkedBlockingQueue<?>) executor.getQueue()).remainingCapacity());
         executor.shutdown();
     }
 
     // ============================================================
-    // AddieResult.getStageOutputs tests
+    // AddrfResult.getStageOutputs tests
     // ============================================================
 
     @Test
     @DisplayName("getStageOutputs maps all fields correctly")
     void getStageOutputs_AllFieldsSet_MapsCorrectly() {
-        AddiePipeline.AddieResult result = new AddiePipeline.AddieResult();
+        AddrfPipeline.AddrfResult result = new AddrfPipeline.AddrfResult();
         result.analysis = "分析结果";
         result.design = "设计内容";
         result.development = "开发内容";
@@ -261,7 +261,7 @@ class AddiePipelineTest {
     @Test
     @DisplayName("getStageOutputs returns empty strings for null fields")
     void getStageOutputs_NullFields_ReturnsEmptyStrings() {
-        AddiePipeline.AddieResult result = new AddiePipeline.AddieResult();
+        AddrfPipeline.AddrfResult result = new AddrfPipeline.AddrfResult();
         Map<String, String> outputs = result.getStageOutputs();
         assertEquals("", outputs.get("analysis"));
         assertEquals("", outputs.get("design"));
@@ -286,8 +286,8 @@ class AddiePipelineTest {
     @DisplayName("shouldRequestHumanReview HITL 规则测试")
     class HumanReviewTests {
 
-        private AddiePipeline.AddieResult makeResult(String development, int score, String design, String review) {
-            AddiePipeline.AddieResult r = new AddiePipeline.AddieResult();
+        private AddrfPipeline.AddrfResult makeResult(String development, int score, String design, String review) {
+            AddrfPipeline.AddrfResult r = new AddrfPipeline.AddrfResult();
             r.analysis = "分析内容正常";
             r.design = design != null ? design : "设计内容正常";
             r.development = development != null ? development : "开发内容正常";
@@ -300,7 +300,7 @@ class AddiePipelineTest {
         @DisplayName("规则1: Development >5000 字 → true")
         void rule1_longDevelopment_returnsTrue() {
             String longDev = "字".repeat(5001);
-            AddiePipeline.AddieResult r = makeResult(longDev, 80, null, null);
+            AddrfPipeline.AddrfResult r = makeResult(longDev, 80, null, null);
             assertTrue(defaultPipeline.shouldRequestHumanReview(r, "数学", 1L));
         }
 
@@ -308,67 +308,67 @@ class AddiePipelineTest {
         @DisplayName("规则1: Development ≤5000 字 → false")
         void rule1_shortDevelopment_returnsFalse() {
             String shortDev = "字".repeat(5000);
-            AddiePipeline.AddieResult r = makeResult(shortDev, 80, null, null);
+            AddrfPipeline.AddrfResult r = makeResult(shortDev, 80, null, null);
             assertFalse(defaultPipeline.shouldRequestHumanReview(r, "数学", 1L));
         }
 
         @Test
         @DisplayName("规则2: Score=30 (<60) → true")
         void rule2_lowScore_returnsTrue() {
-            AddiePipeline.AddieResult r = makeResult("正常内容", 30, null, null);
+            AddrfPipeline.AddrfResult r = makeResult("正常内容", 30, null, null);
             assertTrue(defaultPipeline.shouldRequestHumanReview(r, "数学", 1L));
         }
 
         @Test
         @DisplayName("规则2: Score=0 (未评分) → false")
         void rule2_zeroScore_returnsFalse() {
-            AddiePipeline.AddieResult r = makeResult("正常内容", 0, null, null);
+            AddrfPipeline.AddrfResult r = makeResult("正常内容", 0, null, null);
             assertFalse(defaultPipeline.shouldRequestHumanReview(r, "数学", 1L));
         }
 
         @Test
         @DisplayName("规则2: Score=80 → false")
         void rule2_normalScore_returnsFalse() {
-            AddiePipeline.AddieResult r = makeResult("正常内容", 80, null, null);
+            AddrfPipeline.AddrfResult r = makeResult("正常内容", 80, null, null);
             assertFalse(defaultPipeline.shouldRequestHumanReview(r, "数学", 1L));
         }
 
         @Test
         @DisplayName("规则3: Design 以降级前缀开头 → true")
         void rule3_degradedDesign_returnsTrue() {
-            AddiePipeline.AddieResult r = makeResult("正常内容", 80, "[系统提示: Design 阶段超时]", null);
+            AddrfPipeline.AddrfResult r = makeResult("正常内容", 80, "[系统提示: Design 阶段超时]", null);
             assertTrue(defaultPipeline.shouldRequestHumanReview(r, "数学", 1L));
         }
 
         @Test
         @DisplayName("规则3: Review 以降级前缀开头 → true")
         void rule3_degradedReview_returnsTrue() {
-            AddiePipeline.AddieResult r = makeResult("正常内容", 80, null, "[系统提示: Review 生成失败]");
+            AddrfPipeline.AddrfResult r = makeResult("正常内容", 80, null, "[系统提示: Review 生成失败]");
             assertTrue(defaultPipeline.shouldRequestHumanReview(r, "数学", 1L));
         }
 
         @Test
         @DisplayName("规则4: 含暴力关键词 → true")
         void rule4_unsafeKeyword_returnsTrue() {
-            AddiePipeline.AddieResult r = makeResult("这段内容包含暴力描写", 80, null, null);
+            AddrfPipeline.AddrfResult r = makeResult("这段内容包含暴力描写", 80, null, null);
             assertTrue(defaultPipeline.shouldRequestHumanReview(r, "数学", 1L));
         }
 
         @Test
         @DisplayName("全规则正常内容 → false")
         void allRules_normalContent_returnsFalse() {
-            AddiePipeline.AddieResult r = makeResult("正常教案内容", 85, null, null);
+            AddrfPipeline.AddrfResult r = makeResult("正常教案内容", 85, null, null);
             assertFalse(defaultPipeline.shouldRequestHumanReview(r, "数学", 1L));
         }
 
         @Test
         @DisplayName("needsHumanReview 标志位跟随返回值")
         void needsHumanReview_flag_followsReturnValue() {
-            AddiePipeline.AddieResult r = makeResult("正常内容", 80, null, null);
+            AddrfPipeline.AddrfResult r = makeResult("正常内容", 80, null, null);
             assertFalse(r.needsHumanReview);
             assertFalse(defaultPipeline.shouldRequestHumanReview(r, "数学", 1L));
 
-            AddiePipeline.AddieResult r2 = makeResult("字".repeat(5001), 80, null, null);
+            AddrfPipeline.AddrfResult r2 = makeResult("字".repeat(5001), 80, null, null);
             assertTrue(defaultPipeline.shouldRequestHumanReview(r2, "数学", 1L));
             assertTrue(r2.needsHumanReview, "HITL 触发后 needsHumanReview 应为 true");
         }
@@ -395,7 +395,7 @@ class AddiePipelineTest {
         @Test
         @DisplayName("Cache key format: contains userId, stage, grade, subject")
         void cacheKey_containsAllParts() throws Exception {
-            Method method = AddiePipeline.class.getDeclaredMethod(
+            Method method = AddrfPipeline.class.getDeclaredMethod(
                     "buildAnalysisCacheKey", Long.class, LessonPlanRequest.class);
             method.setAccessible(true);
 
@@ -413,7 +413,7 @@ class AddiePipelineTest {
         @Test
         @DisplayName("Cache key differs for different grades")
         void cacheKey_differsByGrade() throws Exception {
-            Method method = AddiePipeline.class.getDeclaredMethod(
+            Method method = AddrfPipeline.class.getDeclaredMethod(
                     "buildAnalysisCacheKey", Long.class, LessonPlanRequest.class);
             method.setAccessible(true);
 
@@ -429,7 +429,7 @@ class AddiePipelineTest {
         @Test
         @DisplayName("Cache key differs for different subjects")
         void cacheKey_differsBySubject() throws Exception {
-            Method method = AddiePipeline.class.getDeclaredMethod(
+            Method method = AddrfPipeline.class.getDeclaredMethod(
                     "buildAnalysisCacheKey", Long.class, LessonPlanRequest.class);
             method.setAccessible(true);
 
@@ -445,7 +445,7 @@ class AddiePipelineTest {
         @Test
         @DisplayName("Cache key differs for different users")
         void cacheKey_differsByUser() throws Exception {
-            Method method = AddiePipeline.class.getDeclaredMethod(
+            Method method = AddrfPipeline.class.getDeclaredMethod(
                     "buildAnalysisCacheKey", Long.class, LessonPlanRequest.class);
             method.setAccessible(true);
 
@@ -460,7 +460,7 @@ class AddiePipelineTest {
         @Test
         @DisplayName("P2修复: 不同教学目标 → 不同 cache key")
         void cacheKey_differsByGoals() throws Exception {
-            Method method = AddiePipeline.class.getDeclaredMethod(
+            Method method = AddrfPipeline.class.getDeclaredMethod(
                     "buildAnalysisCacheKey", Long.class, LessonPlanRequest.class);
             method.setAccessible(true);
 

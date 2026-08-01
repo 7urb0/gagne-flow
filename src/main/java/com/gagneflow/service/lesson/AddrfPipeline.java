@@ -43,8 +43,8 @@ import org.springframework.web.servlet.mvc.method.annotation.SseEmitter;
 import reactor.core.publisher.Flux;
 
 @Service
-public class AddiePipeline {
-    private static final Logger logger = LoggerFactory.getLogger(AddiePipeline.class);
+public class AddrfPipeline {
+    private static final Logger logger = LoggerFactory.getLogger(AddrfPipeline.class);
     private static final int STAGE_TIMEOUT_SEC = 60;
     private static final int DEV_TIMEOUT_SEC = 180;
     private static final int MAX_RETRIES = 2;
@@ -71,7 +71,7 @@ public class AddiePipeline {
     private static final Pattern DEDUP_TITLE_PATTERN = Pattern.compile("\\*\\*([^*]+)\\*\\*");
 
     @Autowired
-    public AddiePipeline(PromptLoader promptLoader, PromptRegistry promptRegistry,
+    public AddrfPipeline(PromptLoader promptLoader, PromptRegistry promptRegistry,
                          PromptExperiment promptExperiment, PromptMetricsCollector promptMetrics,
                          K12CurriculumLoader k12Loader, FormatTool formatTool,
                          SubjectFormatLoader subjectFormatLoader, PipelineStageConfig stageConfig,
@@ -86,7 +86,7 @@ public class AddiePipeline {
         this.subjectFormatLoader = subjectFormatLoader;
         this.stageConfig = stageConfig;
         this.redisTemplate = redisTemplate;
-        this.executor = executor != null ? executor : AddiePipeline.createDefaultExecutor();
+        this.executor = executor != null ? executor : AddrfPipeline.createDefaultExecutor();
         // P3修复: 启动时校验并输出配置的阶段顺序
         validateStageConfig();
     }
@@ -97,7 +97,7 @@ public class AddiePipeline {
     private void validateStageConfig() {
         List<String> stages = stageConfig.getStages();
         if (stages == null || stages.isEmpty()) {
-            logger.warn("[ADDIE] Pipeline stages \u914d\u7f6e\u4e3a\u7a7a\uff0c\u4f7f\u7528\u9ed8\u8ba4\u987a\u5e8f");
+            logger.warn("[ADDRF] Pipeline stages \u914d\u7f6e\u4e3a\u7a7a\uff0c\u4f7f\u7528\u9ed8\u8ba4\u987a\u5e8f");
             return;
         }
         // 校验必须有核心阶段
@@ -105,49 +105,49 @@ public class AddiePipeline {
         boolean hasDesign = stages.contains("design");
         boolean hasDevelopment = stages.contains("development");
         if (!hasAnalysis || !hasDesign || !hasDevelopment) {
-            logger.error("[ADDIE] Pipeline stages \u914d\u7f6e\u7f3a\u5c11\u5fc5\u8981\u9636\u6bb5 (analysis/design/development)\uff0c\u5f53\u524d: {}", stages);
+            logger.error("[ADDRF] Pipeline stages \u914d\u7f6e\u7f3a\u5c11\u5fc5\u8981\u9636\u6bb5 (analysis/design/development)\uff0c\u5f53\u524d: {}", stages);
             throw new IllegalStateException("Pipeline stages must include at least: analysis, design, development. Current: " + stages);
         }
-        logger.info("[ADDIE] Pipeline \u9636\u6bb5\u914d\u7f6e: {} (\u5b9e\u9645\u6267\u884c\u987a\u5e8f\u4e3a: analysis \u2192 design\u2225development \u2192 format \u2192 review(\u5f02\u6b65))", stages);
+        logger.info("[ADDRF] Pipeline \u9636\u6bb5\u914d\u7f6e: {} (\u5b9e\u9645\u6267\u884c\u987a\u5e8f\u4e3a: analysis \u2192 design\u2225development \u2192 format \u2192 review(\u5f02\u6b65))", stages);
     }
 
     static ThreadPoolExecutor createDefaultExecutor() {
         return new ThreadPoolExecutor(2, 4, 60L, TimeUnit.SECONDS, new LinkedBlockingQueue<Runnable>(50), new ThreadPoolExecutor.CallerRunsPolicy());
     }
 
-    public AddieResult execute(LessonPlanRequest request, DashScopeChatModel chatModel, SseEmitter emitter, String mode, ConcurrentHashMap<String, BlockingQueue<String>> copilotQueues, String sessionContext, Long userId) {
+    public AddrfResult execute(LessonPlanRequest request, DashScopeChatModel chatModel, SseEmitter emitter, String mode, ConcurrentHashMap<String, BlockingQueue<String>> copilotQueues, String sessionContext, Long userId) {
         boolean devDegraded;
         String enhancedDevPrompt;
         String k12Ctx;
-        AddieResult result;
+        AddrfResult result;
         block18: {
             CompletableFuture<Void> devFuture;
             block17: {
-                result = new AddieResult();
+                result = new AddrfResult();
                 k12Ctx = this.loadK12Context(request);
                 String initialInput = this.buildInitialInput(request, k12Ctx, sessionContext);
-                logger.info("[ADDIE] \u9636\u6bb51: Analysis \u5f00\u59cb");
+                logger.info("[ADDRF] \u9636\u6bb51: Analysis \u5f00\u59cb");
                 // Analysis \u7f13\u5b58: \u540c\u4e00\u7528\u6237\u76f8\u540c\u5b66\u6bb5+\u5e74\u7ea7+\u5b66\u79d1\u53ef\u590d\u7528
                 String analysisCacheKey = buildAnalysisCacheKey(userId, request);
                 String cachedAnalysis = tryGetCachedAnalysis(analysisCacheKey);
                 if (cachedAnalysis != null) {
-                    logger.debug("[ADDIE] Analysis \u7f13\u5b58\u547d\u4e2d: {}", analysisCacheKey);
+                    logger.debug("[ADDRF] Analysis \u7f13\u5b58\u547d\u4e2d: {}", analysisCacheKey);
                     result.analysis = cachedAnalysis;
                 } else {
-                    String analysisPrompt = this.loadPrompt("addie_analysis", userId);
+                    String analysisPrompt = this.loadPrompt("addrf_analysis", userId);
                     result.analysis = this.callStageWithRevise(chatModel, analysisPrompt, initialInput, emitter, "analysis", mode, copilotQueues, 60, request.getSubject());
                     if (TERMINATED.equals(result.analysis)) {
                         result.analysis = "[\u7528\u6237\u7ec8\u6b62]";
                         return result;
                     }
                     if (result.analysis != null) {
-                        result.analysis = AddiePipeline.dedupContent(result.analysis);
+                        result.analysis = AddrfPipeline.dedupContent(result.analysis);
                         tryCacheAnalysis(analysisCacheKey, result.analysis);
                     }
                 }
-                logger.info("[ADDIE] \u9636\u6bb52+3: Design & Development \u5e76\u884c\u542f\u52a8");
-                String designPrompt = this.loadPrompt("addie_design", userId);
-                String devPrompt = this.loadPrompt("addie_development", userId);
+                logger.info("[ADDRF] \u9636\u6bb52+3: Design & Development \u5e76\u884c\u542f\u52a8");
+                String designPrompt = this.loadPrompt("addrf_design", userId);
+                String devPrompt = this.loadPrompt("addrf_development", userId);
                 String designExtra = this.subjectFormatLoader.getDesignExtra(request.getSubject());
                 StringBuilder designPromptBuilder = new StringBuilder(designPrompt);
                 if (!designExtra.isEmpty()) {
@@ -166,17 +166,17 @@ public class AddiePipeline {
                 enhancedDevPrompt = devPromptBuilder.toString();
                 CompletableFuture<Void> designFuture = CompletableFuture.runAsync(() -> {
                     result.design = this.callStageWithRevise(chatModel, enhancedDesignPrompt, result.analysis, emitter, "design", mode, copilotQueues, 60, request.getSubject());
-                    logger.info("[ADDIE] Design \u5b8c\u6210, {} \u5b57\u7b26", (Object)(result.design != null ? result.design.length() : 0));
+                    logger.info("[ADDRF] Design \u5b8c\u6210, {} \u5b57\u7b26", (Object)(result.design != null ? result.design.length() : 0));
                 }, this.executor).exceptionally(ex -> {
-                    logger.error("[ADDIE] Design \u9636\u6bb5\u5185\u90e8\u5f02\u5e38\u88ab\u5f02\u6b65\u4efb\u52a1\u6355\u83b7", ex);
+                    logger.error("[ADDRF] Design \u9636\u6bb5\u5185\u90e8\u5f02\u5e38\u88ab\u5f02\u6b65\u4efb\u52a1\u6355\u83b7", ex);
                     result.design = "[\u7cfb\u7edf\u63d0\u793a: Design \u9636\u6bb5\u5185\u90e8\u9519\u8bef]";
                     return null;
                 });
                 devFuture = CompletableFuture.runAsync(() -> {
                     result.development = this.callStageWithRevise(chatModel, enhancedDevPrompt, result.analysis, emitter, "development", mode, copilotQueues, 180, request.getSubject());
-                    logger.info("[ADDIE] Development \u5b8c\u6210, {} \u5b57\u7b26", (Object)(result.development != null ? result.development.length() : 0));
+                    logger.info("[ADDRF] Development \u5b8c\u6210, {} \u5b57\u7b26", (Object)(result.development != null ? result.development.length() : 0));
                 }, this.executor).exceptionally(ex -> {
-                    logger.error("[ADDIE] Development \u9636\u6bb5\u5185\u90e8\u5f02\u5e38\u88ab\u5f02\u6b65\u4efb\u52a1\u6355\u83b7", ex);
+                    logger.error("[ADDRF] Development \u9636\u6bb5\u5185\u90e8\u5f02\u5e38\u88ab\u5f02\u6b65\u4efb\u52a1\u6355\u83b7", ex);
                     result.development = "[\u7cfb\u7edf\u63d0\u793a: Development \u9636\u6bb5\u5185\u90e8\u9519\u8bef]";
                     return null;
                 });
@@ -184,14 +184,14 @@ public class AddiePipeline {
                     designFuture.get(240L, TimeUnit.SECONDS);
                 }
                 catch (TimeoutException e) {
-                    logger.warn("[ADDIE] Design \u9636\u6bb5\u8d85\u65f6({}s)", (Object)240);
+                    logger.warn("[ADDRF] Design \u9636\u6bb5\u8d85\u65f6({}s)", (Object)240);
                     if (result.design == null) {
                         result.design = "[\u7cfb\u7edf\u63d0\u793a: Design \u9636\u6bb5\u8d85\u65f6]";
                     }
                     designFuture.cancel(true);
                 }
                 catch (Exception e) {
-                    logger.error("[ADDIE] Design \u9636\u6bb5\u5f02\u5e38", (Throwable)e);
+                    logger.error("[ADDRF] Design \u9636\u6bb5\u5f02\u5e38", (Throwable)e);
                     if (result.design != null) break block17;
                     result.design = "[\u7cfb\u7edf\u63d0\u793a: Design \u9636\u6bb5\u5f02\u5e38]";
                 }
@@ -200,19 +200,19 @@ public class AddiePipeline {
                 devFuture.get(240L, TimeUnit.SECONDS);
             }
             catch (TimeoutException e) {
-                logger.warn("[ADDIE] Development \u9636\u6bb5\u8d85\u65f6({}s)", (Object)240);
+                logger.warn("[ADDRF] Development \u9636\u6bb5\u8d85\u65f6({}s)", (Object)240);
                 if (result.development == null) {
                     result.development = "[\u7cfb\u7edf\u63d0\u793a: Development \u9636\u6bb5\u8d85\u65f6]";
                 }
                 devFuture.cancel(true);
             }
             catch (Exception e) {
-                logger.error("[ADDIE] Development \u9636\u6bb5\u5f02\u5e38", (Throwable)e);
+                logger.error("[ADDRF] Development \u9636\u6bb5\u5f02\u5e38", (Throwable)e);
                 if (result.development != null) break block18;
                 result.development = "[\u7cfb\u7edf\u63d0\u793a: Development \u9636\u6bb5\u5f02\u5e38]";
             }
         }
-        logger.info("[ADDIE] Format \u5f00\u59cb");
+        logger.info("[ADDRF] Format \u5f00\u59cb");
         boolean bl = devDegraded = result.development != null && result.development.startsWith(DEGRADED_PREFIX);
         if (result.design != null && result.design.startsWith(DEGRADED_PREFIX)) {
             result.design = "\uff08\u6b64\u90e8\u5206\u5f85\u8865\u5145\uff09";
@@ -227,12 +227,12 @@ public class AddiePipeline {
             String finalK12 = k12Ctx;
             String finalSubject = request.getSubject();
             CompletableFuture<Void> reviewTask = CompletableFuture.runAsync(() -> {
-                logger.info("[ADDIE] Review \u540e\u53f0\u5f00\u59cb");
+                logger.info("[ADDRF] Review \u540e\u53f0\u5f00\u59cb");
                 this.asyncReview(result, chatModel, enhancedDevPrompt, emitter, finalK12, finalSubject, userId);
-                logger.info("[ADDIE] Review \u540e\u53f0\u5b8c\u6210, \u8bc4\u5206: {}", (Object)result.score);
+                logger.info("[ADDRF] Review \u540e\u53f0\u5b8c\u6210, \u8bc4\u5206: {}", (Object)result.score);
                 // HITL 检查: 判断是否需要人工审核
                 if (shouldRequestHumanReview(result, request.getSubject(), userId)) {
-                    logger.warn("[ADDIE-HITL] \u89e6\u53d1\u4eba\u5de5\u5ba1\u6838: subject={}, score={}, uid={}",
+                    logger.warn("[ADDRF-HITL] \u89e6\u53d1\u4eba\u5de5\u5ba1\u6838: subject={}, score={}, uid={}",
                         request.getSubject(), result.score, userId);
                 }
                 try {
@@ -240,7 +240,7 @@ public class AddiePipeline {
                     emitter.send(SseEmitter.event().name("message").data(Map.of("type", "stage:format", "content", result.html, "stage", "format", "updated", true)));
                 }
                 catch (Exception e) {
-                    logger.warn("[ADDIE] Review 更新 HTML 推送失败 (emitter 可能已关闭): {}", e.getMessage());
+                    logger.warn("[ADDRF] Review 更新 HTML 推送失败 (emitter 可能已关闭): {}", e.getMessage());
                 }
                 this.emitStageComplete(emitter, "stage:review", result.review);
             }, this.executor);
@@ -256,14 +256,14 @@ public class AddiePipeline {
      * Wait for the background Review task to complete.
      * Fixes F05: ensures Review async SSE pushes happen before main flow sends "done".
      */
-    public void awaitReview(AddieResult result, long timeoutSeconds) {
+    public void awaitReview(AddrfResult result, long timeoutSeconds) {
         if (this.reviewFuture != null) {
             try {
                 this.reviewFuture.get(timeoutSeconds, TimeUnit.SECONDS);
             } catch (TimeoutException e) {
-                logger.warn("[ADDIE] Review background task timed out after {}s", timeoutSeconds);
+                logger.warn("[ADDRF] Review background task timed out after {}s", timeoutSeconds);
             } catch (Exception e) {
-                logger.warn("[ADDIE] Review background task failed: {}", e.getMessage());
+                logger.warn("[ADDRF] Review background task failed: {}", e.getMessage());
             }
         }
     }
@@ -296,9 +296,9 @@ public class AddiePipeline {
         return this.callAgent(chatModel, systemPrompt, userInput, emitter, stage, mode, timeoutSec, subject);
     }
 
-    private void asyncReview(AddieResult result, DashScopeChatModel chatModel, String devPrompt, SseEmitter emitter, String k12Ctx, String subject, Long userId) {
+    private void asyncReview(AddrfResult result, DashScopeChatModel chatModel, String devPrompt, SseEmitter emitter, String k12Ctx, String subject, Long userId) {
         for (int retryCount = 0; !(retryCount > 2 || result.development != null && result.development.startsWith(DEGRADED_PREFIX)); ++retryCount) {
-            String reviewPrompt = this.loadPrompt("addie_review", userId) + "\n\n\u8bfe\u7a0b\u6807\u51c6\uff1a\n" + k12Ctx;
+            String reviewPrompt = this.loadPrompt("addrf_review", userId) + "\n\n\u8bfe\u7a0b\u6807\u51c6\uff1a\n" + k12Ctx;
             result.review = this.callAgent(chatModel, reviewPrompt, result.development, null, "review", "quick", 60, subject);
             if (result.review == null) {
                 result.review = "[\u7cfb\u7edf\u63d0\u793a: Review \u9636\u6bb5\u751f\u6210\u5931\u8d25]";
@@ -307,14 +307,14 @@ public class AddiePipeline {
             result.score = this.extractScore(result.review);
             // 记录 Review 评分到 Prompt 指标收集器
             try {
-                int reviewVersion = this.promptRegistry.getActiveVersionNumber("addie_review");
-                this.promptMetrics.recordScore("addie_review", reviewVersion, result.score);
+                int reviewVersion = this.promptRegistry.getActiveVersionNumber("addrf_review");
+                this.promptMetrics.recordScore("addrf_review", reviewVersion, result.score);
                 if (result.score < 60) {
-                    logger.warn("[ADDIE-REVIEW] \u4f4e\u5206\u9884\u8b66: score={}, subject={}, uid={}",
+                    logger.warn("[ADDRF-REVIEW] \u4f4e\u5206\u9884\u8b66: score={}, subject={}, uid={}",
                             result.score, subject, userId);
                 }
             } catch (Exception e) {
-                logger.debug("[ADDIE-REVIEW] \u8bb0\u5f55\u8bc4\u5206\u5931\u8d25: {}", e.getMessage());
+                logger.debug("[ADDRF-REVIEW] \u8bb0\u5f55\u8bc4\u5206\u5931\u8d25: {}", e.getMessage());
             }
             if (result.score >= 70 || retryCount >= 2) break;
             String feedback = this.extractFeedback(result.review);
@@ -358,7 +358,7 @@ public class AddiePipeline {
                 return full.toString();
             }
             catch (Exception e) {
-                logger.warn("[ADDIE] {} stream() \u964d\u7ea7 call(): {}", (Object)stage, (Object)e.getMessage());
+                logger.warn("[ADDRF] {} stream() \u964d\u7ea7 call(): {}", (Object)stage, (Object)e.getMessage());
                 try {
                     Prompt prompt = new Prompt(List.of(new SystemMessage(systemPrompt), new UserMessage(userInput)), (ChatOptions)DashScopeChatOptions.builder().withMaxToken(Integer.valueOf(maxTokens)).build());
                     ChatResponse response2 = chatModel.call(prompt);
@@ -368,7 +368,7 @@ public class AddiePipeline {
                     }
                 }
                 catch (Exception e2) {
-                    logger.warn("[ADDIE] {} stream() 降级 call() 也失败: {}", stage, e2.getMessage());
+                    logger.warn("[ADDRF] {} stream() 降级 call() 也失败: {}", stage, e2.getMessage());
                 }
                 return "";
             }
@@ -378,11 +378,11 @@ public class AddiePipeline {
         }
         catch (TimeoutException e) {
             future.cancel(true);
-            logger.warn("[ADDIE] {} \u8d85\u65f6({}s)", (Object)stage, (Object)timeoutSec);
+            logger.warn("[ADDRF] {} \u8d85\u65f6({}s)", (Object)stage, (Object)timeoutSec);
             return null;
         }
         catch (ExecutionException e) {
-            logger.error("[ADDIE] {} \u5f02\u5e38", (Object)stage, (Object)e.getCause());
+            logger.error("[ADDRF] {} \u5f02\u5e38", (Object)stage, (Object)e.getCause());
             return null;
         }
         catch (InterruptedException e) {
@@ -400,7 +400,7 @@ public class AddiePipeline {
             emitter.send(SseEmitter.event().name("message").data(Map.of("type", "stage:content", "stage", stage, "chunk", chunk)));
         }
         catch (IOException | IllegalStateException e) {
-            logger.trace("[ADDIE] 临时块推送失败 (emitter 可能已关闭): {}", e.getMessage());
+            logger.trace("[ADDRF] 临时块推送失败 (emitter 可能已关闭): {}", e.getMessage());
         }
     }
 
@@ -414,7 +414,7 @@ public class AddiePipeline {
             emitter.send(SseEmitter.event().name("message").data(Map.of("type", eventType, "content", safe, "stage", stage)));
         }
         catch (IOException | IllegalStateException e) {
-            logger.trace("[ADDIE] 阶段完成推送失败 (emitter 可能已关闭): {}", e.getMessage());
+            logger.trace("[ADDRF] 阶段完成推送失败 (emitter 可能已关闭): {}", e.getMessage());
         }
     }
 
@@ -432,7 +432,7 @@ public class AddiePipeline {
                 emitter.send(SseEmitter.event().name("message").data(Map.of("type", "stage_await", "stage", stage, "content", preview)));
             }
             catch (IOException | IllegalStateException e) {
-                logger.trace("[ADDIE] stage_await 推送失败 (emitter 可能已关闭)");
+                logger.trace("[ADDRF] stage_await 推送失败 (emitter 可能已关闭)");
             }
             return null;
         }
@@ -506,7 +506,7 @@ public class AddiePipeline {
         try {
             return this.redisTemplate.opsForValue().get(cacheKey);
         } catch (Exception e) {
-            logger.debug("[ADDIE] Analysis \u7f13\u5b58\u8bfb\u53d6\u5931\u8d25: {}", e.getMessage());
+            logger.debug("[ADDRF] Analysis \u7f13\u5b58\u8bfb\u53d6\u5931\u8d25: {}", e.getMessage());
             return null;
         }
     }
@@ -514,9 +514,9 @@ public class AddiePipeline {
     private void tryCacheAnalysis(String cacheKey, String analysis) {
         try {
             this.redisTemplate.opsForValue().set(cacheKey, analysis, Duration.ofHours(1));
-            logger.debug("[ADDIE] Analysis \u7f13\u5b58\u5199\u5165: {}", cacheKey);
+            logger.debug("[ADDRF] Analysis \u7f13\u5b58\u5199\u5165: {}", cacheKey);
         } catch (Exception e) {
-            logger.debug("[ADDIE] Analysis \u7f13\u5b58\u5199\u5165\u5931\u8d25: {}", e.getMessage());
+            logger.debug("[ADDRF] Analysis \u7f13\u5b58\u5199\u5165\u5931\u8d25: {}", e.getMessage());
         }
     }
 
@@ -582,7 +582,7 @@ public class AddiePipeline {
         if (m.find()) {
             return Integer.parseInt(m.group(1));
         }
-        logger.warn("[ADDIE] 无法从 review 内容中解析评分，默认视为不通过: review 前200字符={}", 
+        logger.warn("[ADDRF] 无法从 review 内容中解析评分，默认视为不通过: review 前200字符={}", 
                 review.length() > 200 ? review.substring(0, 200) : review);
         return 0;
     }
@@ -609,16 +609,16 @@ public class AddiePipeline {
      * 规则 3: 触发了降级（DEGRADED_PREFIX）→ 异常路径需确认
      * 规则 4: 危险关键词（毒品/暴力/歧视/自残）→ 合规要求
      */
-    public boolean shouldRequestHumanReview(AddieResult result, String subject, Long userId) {
+    public boolean shouldRequestHumanReview(AddrfResult result, String subject, Long userId) {
         // 规则 1: Development 输出超过 5000 字
         if (result.development != null && result.development.length() > 5000) {
-            logger.info("[ADDIE-HITL] 规则1触发: Development 输出过长 ({}字)", result.development.length());
+            logger.info("[ADDRF-HITL] 规则1触发: Development 输出过长 ({}字)", result.development.length());
             result.needsHumanReview = true;
             return true;
         }
         // 规则 2: Review 评分 < 60
         if (result.score < 60 && result.score > 0) {
-            logger.info("[ADDIE-HITL] 规则2触发: Review 评分过低 ({})", result.score);
+            logger.info("[ADDRF-HITL] 规则2触发: Review 评分过低 ({})", result.score);
             result.needsHumanReview = true;
             return true;
         }
@@ -627,7 +627,7 @@ public class AddiePipeline {
             || (result.design != null && result.design.startsWith(DEGRADED_PREFIX))
             || (result.development != null && result.development.startsWith(DEGRADED_PREFIX))
             || (result.review != null && result.review.startsWith(DEGRADED_PREFIX))) {
-            logger.info("[ADDIE-HITL] 规则3触发: 存在降级输出");
+            logger.info("[ADDRF-HITL] 规则3触发: 存在降级输出");
             result.needsHumanReview = true;
             return true;
         }
@@ -636,7 +636,7 @@ public class AddiePipeline {
             + (result.review != null ? result.review : "")
             + (result.analysis != null ? result.analysis : "");
         if (containsUnsafeKeyword(combined)) {
-            logger.info("[ADDIE-HITL] 规则4触发: 检测到危险关键词");
+            logger.info("[ADDRF-HITL] 规则4触发: 检测到危险关键词");
             result.needsHumanReview = true;
             return true;
         }
@@ -657,7 +657,7 @@ public class AddiePipeline {
         return false;
     }
 
-    public static class AddieResult {
+    public static class AddrfResult {
         // volatile: 多线程可见性保证（Review异步线程写入，主线程读取）
         public volatile String analysis;
         public volatile String design;

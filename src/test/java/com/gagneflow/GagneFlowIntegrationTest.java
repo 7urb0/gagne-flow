@@ -2,7 +2,7 @@ package com.gagneflow;
 
 import com.gagneflow.config.PipelineStageConfig;
 import com.gagneflow.dto.LessonPlanRequest;
-import com.gagneflow.service.lesson.AddiePipeline;
+import com.gagneflow.service.lesson.AddrfPipeline;
 import com.gagneflow.service.lesson.FormatTool;
 import org.junit.jupiter.api.DisplayName;
 import org.junit.jupiter.api.Test;
@@ -11,7 +11,7 @@ import static org.junit.jupiter.api.Assertions.*;
 
 /**
  * 集成测试（无 Spring 上下文加载）：
- * 验证 PipelineStageConfig、AddiePipeline、FormatTool 等核心组件
+ * 验证 PipelineStageConfig、AddrfPipeline、FormatTool 等核心组件
  * 在手动构造下的行为正确性。
  *
  * 注意：完整的 @SpringBootTest 集成需要 MySQL/Redis/Milvus 环境，
@@ -47,9 +47,9 @@ class GagneFlowIntegrationTest {
     }
 
     @Test
-    @DisplayName("AddiePipeline extractScore works with various formats")
-    void addiePipelineExtractScore() {
-        AddiePipeline pipeline = new AddiePipeline(null, null, null, null, null, null, null,
+    @DisplayName("AddrfPipeline extractScore works with various formats")
+    void addrfPipelineExtractScore() {
+        AddrfPipeline pipeline = new AddrfPipeline(null, null, null, null, null, null, null,
             new PipelineStageConfig(), null, null);
 
         assertEquals(85, pipeline.extractScore("总分: 85\n内容良好"));
@@ -78,12 +78,12 @@ class GagneFlowIntegrationTest {
     }
 
     @Test
-    @DisplayName("AddiePipeline.dedupContent removes duplicate sections")
-    void addiePipelineDedupContent() throws Exception {
+    @DisplayName("AddrfPipeline.dedupContent removes duplicate sections")
+    void addrfPipelineDedupContent() throws Exception {
         String content = "**教学目标**\n让学生掌握基础知识。\n\n"
                 + "**教学目标**\n让学生掌握基础知识，并能灵活运用。\n\n"
                 + "**教学重难点**\n重点是概念理解。\n";
-        var method = AddiePipeline.class.getDeclaredMethod("dedupContent", String.class);
+        var method = AddrfPipeline.class.getDeclaredMethod("dedupContent", String.class);
         method.setAccessible(true);
         String result = (String) method.invoke(null, content);
         assertTrue(result.contains("能灵活运用"), "应保留较长的版本");

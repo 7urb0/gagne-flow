@@ -47,7 +47,7 @@ class PromptAdminControllerTest {
     }
 
     private PromptVersion version(int v, boolean active, String desc) {
-        PromptVersion pv = new PromptVersion("addie_review", v, "content-" + v, desc);
+        PromptVersion pv = new PromptVersion("addrf_review", v, "content-" + v, desc);
         pv.setActive(active);
         return pv;
     }
@@ -59,11 +59,11 @@ class PromptAdminControllerTest {
         @Test
         @DisplayName("返回版本列表，含 versionNumber/active/contentLength")
         void listVersions_shouldMapAllFields() {
-            when(promptRegistry.listVersions("addie_review"))
+            when(promptRegistry.listVersions("addrf_review"))
                     .thenReturn(List.of(version(1, false, "v1"), version(2, true, "v2")));
 
             ResponseEntity<List<Map<String, Object>>> res =
-                    controller.listVersions("addie_review");
+                    controller.listVersions("addrf_review");
 
             assertEquals(HttpStatus.OK, res.getStatusCode());
             List<Map<String, Object>> body = res.getBody();
@@ -79,11 +79,11 @@ class PromptAdminControllerTest {
         @Test
         @DisplayName("description 为 null 时返回空串不 NPE")
         void listVersions_nullDescription_returnsEmptyString() {
-            when(promptRegistry.listVersions("addie_review"))
+            when(promptRegistry.listVersions("addrf_review"))
                     .thenReturn(List.of(version(1, true, null)));
 
             ResponseEntity<List<Map<String, Object>>> res =
-                    controller.listVersions("addie_review");
+                    controller.listVersions("addrf_review");
 
             assertEquals("", res.getBody().get(0).get("description"));
         }
@@ -96,23 +96,23 @@ class PromptAdminControllerTest {
         @Test
         @DisplayName("registry 有记录时返回 distinct 名称")
         void listNames_shouldReturnDistinct() {
-            when(promptRegistry.listVersions("addie_analysis"))
+            when(promptRegistry.listVersions("addrf_analysis"))
                     .thenReturn(List.of(version(1, true, null), version(2, true, null)));
 
             ResponseEntity<List<String>> res = controller.listPromptNames();
 
             assertEquals(HttpStatus.OK, res.getStatusCode());
-            assertEquals(List.of("addie_review"), res.getBody());
+            assertEquals(List.of("addrf_review"), res.getBody());
         }
 
         @Test
-        @DisplayName("registry 无记录时返回默认 4 个 addie 名称")
+        @DisplayName("registry 无记录时返回默认 4 个 addrf 名称")
         void listNames_empty_returnsDefaults() {
-            when(promptRegistry.listVersions("addie_analysis")).thenReturn(List.of());
+            when(promptRegistry.listVersions("addrf_analysis")).thenReturn(List.of());
 
             ResponseEntity<List<String>> res = controller.listPromptNames();
 
-            assertEquals(List.of("addie_analysis", "addie_design", "addie_development", "addie_review"),
+            assertEquals(List.of("addrf_analysis", "addrf_design", "addrf_development", "addrf_review"),
                     res.getBody());
         }
     }
@@ -124,13 +124,13 @@ class PromptAdminControllerTest {
         @Test
         @DisplayName("激活成功返回目标版本信息")
         void activate_shouldReturnActivatedVersion() {
-            when(promptRegistry.activate("addie_review", 2)).thenReturn(version(2, true, "v2"));
+            when(promptRegistry.activate("addrf_review", 2)).thenReturn(version(2, true, "v2"));
 
-            ResponseEntity<Map<String, Object>> res = controller.activate("addie_review", 2);
+            ResponseEntity<Map<String, Object>> res = controller.activate("addrf_review", 2);
 
             assertEquals(HttpStatus.OK, res.getStatusCode());
             Map<String, Object> body = res.getBody();
-            assertEquals("addie_review", body.get("promptName"));
+            assertEquals("addrf_review", body.get("promptName"));
             assertEquals(2, body.get("versionNumber"));
             assertEquals(true, body.get("active"));
             assertTrue(body.get("message").toString().contains("已激活"));
@@ -146,10 +146,10 @@ class PromptAdminControllerTest {
         void compare_shouldReturnComparison() {
             PromptMetricsCollector.PromptComparison cmp =
                     mock(PromptMetricsCollector.PromptComparison.class);
-            when(promptMetrics.compare("addie_review", 1, 2)).thenReturn(cmp);
+            when(promptMetrics.compare("addrf_review", 1, 2)).thenReturn(cmp);
 
             ResponseEntity<PromptMetricsCollector.PromptComparison> res =
-                    controller.compare("addie_review", 1, 2);
+                    controller.compare("addrf_review", 1, 2);
 
             assertEquals(HttpStatus.OK, res.getStatusCode());
             assertSame(cmp, res.getBody());
@@ -160,10 +160,10 @@ class PromptAdminControllerTest {
         void stats_shouldReturnStats() {
             Map<Integer, PromptMetricsCollector.VersionStats> stats =
                     Map.of(1, mock(PromptMetricsCollector.VersionStats.class));
-            when(promptMetrics.getStats("addie_review")).thenReturn(stats);
+            when(promptMetrics.getStats("addrf_review")).thenReturn(stats);
 
             ResponseEntity<Map<Integer, PromptMetricsCollector.VersionStats>> res =
-                    controller.getStats("addie_review");
+                    controller.getStats("addrf_review");
 
             assertEquals(HttpStatus.OK, res.getStatusCode());
             assertEquals(stats, res.getBody());
@@ -179,7 +179,7 @@ class PromptAdminControllerTest {
         void experimentStatus_shouldReturnConfig() {
             when(promptExperiment.isEnabled()).thenReturn(true);
             when(promptExperiment.getSplits())
-                    .thenReturn(Map.of("addie_review", Map.of(1, 0.7, 2, 0.3)));
+                    .thenReturn(Map.of("addrf_review", Map.of(1, 0.7, 2, 0.3)));
 
             ResponseEntity<Map<String, Object>> res = controller.experimentStatus();
 
