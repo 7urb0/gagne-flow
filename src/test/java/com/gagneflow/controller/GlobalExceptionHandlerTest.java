@@ -143,4 +143,21 @@ class GlobalExceptionHandlerTest {
             assertEquals(500, res.getBody().get("status"));
         }
     }
+
+    @Nested
+    @DisplayName("NoResourceFoundException -> 404")
+    class NoResourceFoundTests {
+
+        @Test
+        void shouldReturn404WithResourcePath() {
+            org.springframework.web.servlet.resource.NoResourceFoundException ex =
+                    new org.springframework.web.servlet.resource.NoResourceFoundException(
+                            org.springframework.http.HttpMethod.GET, "/api/not-exist");
+            ResponseEntity<Map<String, Object>> resp = handler.handleNoResourceFound(ex);
+            assertEquals(HttpStatus.NOT_FOUND, resp.getStatusCode());
+            assertEquals(404, resp.getBody().get("status"));
+            assertTrue(resp.getBody().get("message").toString().contains("/api/not-exist"),
+                    "404 消息应包含不存在的资源路径");
+        }
+    }
 }

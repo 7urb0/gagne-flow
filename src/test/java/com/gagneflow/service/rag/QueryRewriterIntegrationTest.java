@@ -23,7 +23,9 @@ class QueryRewriterIntegrationTest {
 
     @BeforeEach
     void setUp() {
-        rewriter = new QueryRewriter();
+        // H-9修复: 构造注入 DashScopeApi（单测 mock，不触发真实连接）
+        rewriter = new QueryRewriter(org.mockito.Mockito.mock(
+                com.alibaba.cloud.ai.dashscope.api.DashScopeApi.class));
         ReflectionTestUtils.setField(rewriter, "enabled", true);
         ReflectionTestUtils.setField(rewriter, "llmEnabled", false); // 默认关闭 LLM
     }
@@ -97,5 +99,24 @@ class QueryRewriterIntegrationTest {
     void extractKeywords_emptyQuotes_ignored() {
         String result = rewriter.extractKeywords("「」空的内容");
         assertFalse(result.contains("「"));
+    }
+
+    @Test
+    @DisplayName("LLM 改写结果与原查询无关联时判定无效（防跑偏丢弃原查询）")
+    void isValidRewrite_unrelated_shouldReject() throws Exception {
+        java.lang.reflect.Method m = QueryRewriter.class.getDeclaredMethod("isValidRewrite", String.class, String.class);
+        m.setAccessible(true);
+        // 场景: 独立完整查询被 LLM 用历史话题覆盖（公共子串 < 2）
+        assertFalse((Boolean) m.invoke(rewriter, "完全独立的完整查询", "三年级分数怎么教"));
+    }
+
+    @Test
+    @DisplayName("LLM 改写保留核心词时判定有效（指代消解正常场景）")
+    void isValidRewrite_related_shouldAccept() throws Exception {
+        java.lang.reflect.Method m = QueryRewriter.class.getDeclaredMethod("isValidRewrite", String.class, String.class);
+        m.setAccessible(true);
+        assertTrue((Boolean) m.invoke(rewriter, "它的内角和是多少", "三角形的内角和是多少"));
+        assertTrue((Boolean) m.invoke(rewriter, "上次说的那个分数导入方法", "三年级数学分数教学的导入方法 其他例子"));
+        assertTrue((Boolean) m.invoke(rewriter, "怎么教", "五年级小数乘法 怎么教"));
     }
 }

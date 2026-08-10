@@ -204,8 +204,10 @@ public class VectorIndexService {
                 .replaceAll("&[a-z]+;", " ")
                 .replaceAll("\\s+", " ")
                 .trim();
-        if (plainText.length() < 100) {
-            logger.info("[回灌跳过] 内容过短 ({} 字符)", plainText.length());
+        // 3. 规则硬校验（纯规则，不依赖 LLM 评分）: 结构完整性 + 字数下限
+        String invalidReason = validateLessonPlanStructure(plainText);
+        if (invalidReason != null) {
+            logger.info("[回灌跳过] 规则校验未通过: {}", invalidReason);
             return;
         }
         // 3. 相似度检查: 仅对比已有教案，不对比原始文档（教案与教材内容相似是合理的）
@@ -279,13 +281,51 @@ public class VectorIndexService {
         }
     }
 
+    /**
+     * 反哺教案结构规则校验 (纯规则，不依赖 LLM 评分)。
+     * 参考 agent-config/prompts/v1/addrf/ 模板与 FormatTool 输出结构，
+     * 教案完整 HTML 必然包含以下核心要素（经 HTML→纯文本后仍保留关键词）：
+     *   - 教学目标:   Analysis 阶段 addrf_analysis 模板强制输出 **教学目标**
+     *   - 教学重难点: Design 阶段 addrf_design 模板强制输出 教学重难点
+     *   - 教学过程:   Development 阶段 addrf_development 模板输出 导入/探究新知/巩固练习 等环节
+     *   - 教学评估:   Review 阶段 addrf_review 模板输出 质量评估报告
+     * 要求: 纯文本 >= 500 字 且 至少命中 3 个核心要素（宁缺毋滥）。
+     *
+     * @return 校验失败原因；null 表示通过
+     */
+    static String validateLessonPlanStructure(String plainText) {
+        if (plainText == null || plainText.trim().isEmpty()) {
+            return "纯文本为空";
+        }
+        // 字数下限: 完整教案（分析+设计+过程+评估）应远超 500 字
+        if (plainText.length() < 500) {
+            return "纯文本过短 (" + plainText.length() + " 字 < 500 字)";
+        }
+        // 核心要素关键词（按 addrf 模板的强约束输出格式确定）
+        String[] coreElements = {
+            "教学目标", "教学重难点", "教学过程", "教学评估"
+        };
+        int hitCount = 0;
+        for (String element : coreElements) {
+            if (plainText.contains(element)) {
+                hitCount++;
+            }
+        }
+        if (hitCount < 3) {
+            return "结构不完整: 核心要素命中 " + hitCount + "/4 (至少需 3 个)";
+        }
+        return null;
+    }
+
     private Map<String, Object> buildLessonPlanMetadata(Long userId, String subject, int score,
                                                           DocumentChunk chunk, int totalChunks) {
         HashMap<String, Object> metadata = new HashMap<>();
         metadata.put("_source", "generated_lesson_plan");
         metadata.put("_user_id", String.valueOf(userId != null ? userId : 0L));
         metadata.put("_subject", subject != null ? subject : "");
-        metadata.put("_score", String.valueOf(score));
+        // 反哺教案分级: 必须存数值类型，与检索端 metadata["_score"] >= 85 表达式保持一致
+        // （原实现存 String.valueOf(score) 会导致 Milvus 数值比较类型不匹配，过滤失效）
+        metadata.put("_score", score);
         metadata.put("_lesson_plan", "true");
         metadata.put("chunkIndex", chunk.getChunkIndex());
         metadata.put("totalChunks", totalChunks);

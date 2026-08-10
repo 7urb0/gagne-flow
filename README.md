@@ -159,7 +159,8 @@ GagneFlow/
 │       └── addrf_review.md
 │
 ├── lesson-plan-docs/               # K12 教学知识库
-│   ├── k12_curriculum.json         #   课标知识 (小/初/高 · 语数英)
+│   ├── curriculum/               #   教育部课标原文 PDF (高中 20 科 + 义务教育 16 科)
+│   ├── curriculum_chunks.json    #   课标原文分片 (解析产物, 已入 Milvus)
 │   ├── subject-formats.json        #   学科格式规范 (9 学科)
 │   └── templates/                  #   10 个教案模板 JSON
 │
@@ -458,7 +459,7 @@ curl -X POST http://localhost:9900/api/files/upload \
 | CORS 白名单 | `CORS_ALLOWED_ORIGINS` | `localhost:9900,localhost:5173` | 允许跨域来源 |
 | DashScope API Key | `DASHSCOPE_API_KEY` | — | **必填** |
 | Embedding 模型 | `DASHSCOPE_EMBEDDING_MODEL` | `text-embedding-v4` | 1024 维向量 |
-| Rerank 模型 | `DASHSCOPE_RERANK_MODEL` | `gte-rerank` | 重排序模型 |
+| Rerank 模型 | `DASHSCOPE_RERANK_MODEL` | `qwen3-rerank` | 重排序模型 |
 | RAG 对话模型 | `RAG_MODEL` | `qwen-max-latest` | 答案生成模型 |
 | 摘要模型 | `DASHSCOPE_SUMMARY_MODEL` | `qwen-plus` | 对话摘要模型 |
 | JWT 密钥 | `JWT_SECRET` | — | **必填**，≥32 字节 |
@@ -509,7 +510,7 @@ curl -X POST http://localhost:9900/api/files/upload \
 POST /api/lesson_plan → JVM锁 + Redis锁 → 线程池异步执行
 │
 ├─ Phase 1: ANALYSIS
-│   ├─ 加载 K12 课标 (k12_curriculum.json)
+│   ├─ 检索课标原文分片 (Milvus, _source=curriculum_2022, 教育部课标原文)
 │   ├─ 加载学科格式 (subject-formats.json)
 │   ├─ LLM 生成: 学情分析 + 知识点清单 + 三维教学目标
 │   └─ 输出缓存至 Redis
@@ -539,7 +540,7 @@ POST /api/lesson_plan → JVM锁 + Redis锁 → 线程池异步执行
   → QueryRewriter (规则改写: 关键词提取 + 历史拼接)
   → VectorEmbedding (text-embedding-v4 → 1024 维向量)
   → Milvus L2 搜索 (nprobe=16 自适应, 返回 15 候选)
-  → DashScope Rerank (gte-rerank, 精排至 3 条)
+  → DashScope Rerank (qwen3-rerank, 精排至 3 条)
   → 相关性过滤 (threshold=0.3)
   → 构建引用感知 Prompt
   → 流式生成答案 (SSE)

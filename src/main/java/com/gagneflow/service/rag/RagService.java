@@ -15,6 +15,7 @@ import com.fasterxml.jackson.databind.ObjectMapper;
 import io.reactivex.Flowable;
 import jakarta.annotation.PostConstruct;
 import java.util.ArrayList;
+import java.util.Comparator;
 import java.util.List;
 import java.util.Map;
 import java.util.concurrent.TimeUnit;
@@ -96,6 +97,11 @@ public class RagService {
     }
 
     String buildContextWithCitations(List<VectorSearchService.SearchResult> searchResults) {
+        // 来源优先级分层: 用户上传文档 > 课标 > 历史教案 > 其他
+        // 用稳定排序（TimSort）——同来源内保持精排相关性顺序，只调整来源间的先后
+        if (searchResults.size() > 1) {
+            searchResults.sort(Comparator.comparingInt(this::sourcePriority));
+        }
         StringBuilder context = new StringBuilder();
         int citationIndex = 0;
         for (VectorSearchService.SearchResult result : searchResults) {
@@ -106,6 +112,25 @@ public class RagService {
             context.append(String.format("[%d] (\u6765\u6e90: %s, \u76f8\u5173\u6027: %.2f)\n%s\n\n", ++citationIndex, this.extractSourceName(result), Float.valueOf(result.getScore()), result.getContent()));
         }
         return context.toString();
+    }
+
+    /**
+     * 来源优先级: 值越小优先级越高。
+     * 0 = 用户上传文档(_file_name) ｜ 1 = 教育部课标(curriculum_2022) ｜ 2 = 历史教案(generated_lesson_plan) ｜ 3 = 其他
+     */
+    private int sourcePriority(VectorSearchService.SearchResult result) {
+        if (result.getMetadata() == null) return 3;
+        try {
+            JsonNode meta = objectMapper.readTree(result.getMetadata());
+            if (meta.has("_file_name")) return 0;
+            String source = meta.path("_source").asText("");
+            if ("curriculum_2022".equals(source)) return 1;
+            if ("generated_lesson_plan".equals(source)) return 2;
+            return 3;
+        } catch (Exception e) {
+            logger.trace("\u5143\u6570\u636e\u89e3\u6790\u5931\u8d25\uff0c\u9ed8\u8ba4\u6700\u4f4e\u4f18\u5148\u7ea7: {}", e.getMessage());
+            return 3;
+        }
     }
 
     String buildPromptWithCitations(String question, String context) {
@@ -125,7 +150,16 @@ public class RagService {
                 return meta.get("_file_name").asText();
             }
             if (meta.has("_source")) {
-                return meta.get("_source").asText();
+                String source = meta.get("_source").asText();
+                // 来源标注: 将内部 _source 码映射为对用户可读的来源描述
+                if ("curriculum_2022".equals(source)) {
+                    String stage = meta.has("_stage") ? meta.get("_stage").asText() : "";
+                    return stage.isEmpty() ? "\u6559\u80b2\u90e8\u8bfe\u7a0b\u6807\u51c6\u539f\u6587" : "\u6559\u80b2\u90e8\u8bfe\u7a0b\u6807\u51c6\u539f\u6587\uff08" + stage + "\uff09";
+                }
+                if ("generated_lesson_plan".equals(source)) {
+                    return "\u5386\u53f2\u6559\u6848";
+                }
+                return source;
             }
         }
         catch (Exception e) {

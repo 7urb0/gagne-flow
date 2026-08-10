@@ -75,3 +75,12 @@ reasonix.toml
 test-output.txt
 test-output.log
 docs/
+
+### OCR 中间产物与临时文件 ###
+lesson-plan-docs/ocr_tmp_archive/
+lesson-plan-docs/curriculum_ocr/
+lesson-plan-docs/curriculum/*.pdf
+__pycache__/
+*.pyc
+embed_fails.txt
+.tmp_reinforce_note.md

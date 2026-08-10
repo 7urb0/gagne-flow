@@ -32,8 +32,12 @@ public class QueryRewriter {
     @Value("${rag.query-rewrite.llm-model:qwen-turbo}")
     private String llmModel;
 
-    @Value("${spring.ai.dashscope.api-key}")
-    private String apiKey;
+    // H-9修复: 注入 DashScopeApi 单例（复用 HTTP 连接池），避免每次 LLM 改写新建连接
+    private final DashScopeApi dashScopeApi;
+
+    public QueryRewriter(DashScopeApi dashScopeApi) {
+        this.dashScopeApi = dashScopeApi;
+    }
 
     public String rewrite(String originalQuestion, List<Map<String, String>> history) {
         if (!this.enabled || originalQuestion == null || originalQuestion.isBlank()) {
@@ -91,7 +95,8 @@ public class QueryRewriter {
      * 将上下文依赖查询改写为独立、完整的检索查询
      */
     private String rewriteWithLlm(String query, List<Map<String, String>> history) {
-        DashScopeApi api = DashScopeApi.builder().apiKey(this.apiKey).build();
+        // H-9修复: 复用注入的 DashScopeApi 单例，不再每次新建（避免 OkHttp 连接池泄漏）
+        DashScopeApi api = this.dashScopeApi;
         DashScopeChatModel model = DashScopeChatModel.builder()
                 .dashScopeApi(api)
                 .defaultOptions(DashScopeChatOptions.builder()
@@ -107,13 +112,19 @@ public class QueryRewriter {
                 规则：
                 1. 将指代词（"它"、"这个"、"上次说的"、"那个方案"）替换为对话中的具体内容
                 2. 补充上下文中省略的主语、宾语、学科、年级等信息
-                3. 如果查询已经完整独立，直接返回原查询
+                3. 如果查询已经完整独立（无指代词、主语完整），必须原样返回，一个字都不要改
                 4. 输出只有改写后的查询文本，不要加引号、不要解释、不要标注
+                5. 改写结果必须保留原查询的核心词（学科、年级、知识点），只补充缺失的上下文
 
                 示例：
                 历史: 用户问"三年级数学分数怎么教"，助手答"建议从分蛋糕引入"
                 查询: "上次说的那个分数导入方法还有其他例子吗"
-                输出: 三年级数学分数教学的导入方法 其他例子 分蛋糕引入""";
+                输出: 三年级数学分数教学的导入方法 其他例子 分蛋糕引入
+
+                示例：
+                历史: 用户问"三年级数学分数怎么教"，助手答"建议从分蛋糕引入"
+                查询: "分数的加减法有什么技巧"
+                输出: 分数的加减法有什么技巧""";
 
         String historyText = formatHistoryForPrompt(history);
         String userMessage = "对话历史：\n" + historyText + "\n用户查询：" + query;
@@ -122,11 +133,45 @@ public class QueryRewriter {
         ChatResponse response = model.call(prompt);
         if (response != null && response.getResult() != null) {
             String rewritten = response.getResult().getOutput().getText();
-            if (rewritten != null && !rewritten.isBlank() && !rewritten.equals(query)) {
+            if (rewritten != null && !rewritten.isBlank() && !rewritten.equals(query)
+                    && isValidRewrite(query, rewritten)) {
+                return rewritten.trim();
+            }
+            if (rewritten != null && !rewritten.isBlank() && rewritten.equals(query)) {
                 return rewritten.trim();
             }
         }
         return null;
+    }
+
+    /**
+     * L4修复: 校验 LLM 改写结果是否保留原查询核心内容。
+     * 防止模型对"完整独立查询"跑偏改写（丢弃原查询、用历史话题覆盖）。
+     * 改写结果与原查询无任何关联（公共子串 < 2 字符）时判定无效，回退规则路径。
+     */
+    private boolean isValidRewrite(String original, String rewritten) {
+        if (original == null || rewritten == null) return false;
+        String o = original.replaceAll("\\s+", "");
+        String r = rewritten.replaceAll("\\s+", "");
+        if (o.isEmpty() || r.isEmpty()) return false;
+        // 直接包含关系（改写保留了原查询整体）
+        if (r.contains(o) || o.contains(r)) return true;
+        // 最长公共子串 >= 2（核心词被保留）
+        return longestCommonSubstring(o, r) >= 2;
+    }
+
+    private int longestCommonSubstring(String a, String b) {
+        int maxLen = 0;
+        int[][] dp = new int[a.length() + 1][b.length() + 1];
+        for (int i = 1; i <= a.length(); i++) {
+            for (int j = 1; j <= b.length(); j++) {
+                if (a.charAt(i - 1) == b.charAt(j - 1)) {
+                    dp[i][j] = dp[i - 1][j - 1] + 1;
+                    if (dp[i][j] > maxLen) maxLen = dp[i][j];
+                }
+            }
+        }
+        return maxLen;
     }
 
     /**

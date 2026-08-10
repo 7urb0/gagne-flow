@@ -2,6 +2,7 @@ package com.gagneflow.controller;
 
 import com.fasterxml.jackson.databind.ObjectMapper;
 import com.gagneflow.repository.UserRepository;
+import io.milvus.client.MilvusServiceClient;
 import org.junit.jupiter.api.BeforeEach;
 import org.junit.jupiter.api.DisplayName;
 import org.junit.jupiter.api.Nested;
@@ -9,6 +10,7 @@ import org.junit.jupiter.api.Test;
 import org.springframework.beans.factory.annotation.Autowired;
 import org.springframework.boot.test.autoconfigure.web.servlet.AutoConfigureMockMvc;
 import org.springframework.boot.test.context.SpringBootTest;
+import org.springframework.boot.test.mock.mockito.MockBean;
 import org.springframework.http.MediaType;
 import org.springframework.test.context.ActiveProfiles;
 import org.springframework.test.web.servlet.MockMvc;
@@ -27,6 +29,9 @@ import static org.springframework.test.web.servlet.result.MockMvcResultMatchers.
 @Transactional
 @DisplayName("Auth Integration Tests")
 class AuthIntegrationTest {
+
+    // 测试环境无真实 Milvus 容器，用 mock 替代避免 @SpringBootTest 上下文加载失败
+    @MockBean private MilvusServiceClient milvusClient;
 
     @Autowired private MockMvc mockMvc;
     @Autowired private UserRepository userRepository;
@@ -237,8 +242,12 @@ class AuthIntegrationTest {
         @Test
         @DisplayName("public endpoints accessible without authentication")
         void publicEndpoints() throws Exception {
+            // 验证公开端点无需鉴权即可访问。
+            // 测试环境无 Redis/DashScope，health 可能返回 503(DOWN)，
+            // 但不应返回 401/403（鉴权拦截），故断言"非未授权"而非固定 200。
             mockMvc.perform(get("/actuator/health"))
-                    .andExpect(status().isOk());
+                    .andExpect(result -> assertNotEquals(401, result.getResponse().getStatus()))
+                    .andExpect(result -> assertNotEquals(403, result.getResponse().getStatus()));
         }
     }
 

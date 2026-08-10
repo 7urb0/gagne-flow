@@ -1,6 +1,5 @@
 package com.gagneflow.service.lesson;
 
-import com.alibaba.cloud.ai.dashscope.chat.DashScopeChatModel;
 import com.alibaba.cloud.ai.dashscope.chat.DashScopeChatOptions;
 import java.io.IOException;
 import java.time.Duration;
@@ -115,7 +114,7 @@ public class AddrfPipeline {
         return new ThreadPoolExecutor(2, 4, 60L, TimeUnit.SECONDS, new LinkedBlockingQueue<Runnable>(50), new ThreadPoolExecutor.CallerRunsPolicy());
     }
 
-    public AddrfResult execute(LessonPlanRequest request, DashScopeChatModel chatModel, SseEmitter emitter, String mode, ConcurrentHashMap<String, BlockingQueue<String>> copilotQueues, String sessionContext, Long userId) {
+    public AddrfResult execute(LessonPlanRequest request, ChatModelPort chatModel, SseEmitter emitter, String mode, ConcurrentHashMap<String, BlockingQueue<String>> copilotQueues, String sessionContext, Long userId) {
         boolean devDegraded;
         String enhancedDevPrompt;
         String k12Ctx;
@@ -268,7 +267,7 @@ public class AddrfPipeline {
         }
     }
 
-    private String callStageWithRevise(DashScopeChatModel chatModel, String systemPrompt, String userInput, SseEmitter emitter, String stage, String mode, ConcurrentHashMap<String, BlockingQueue<String>> copilotQueues, int timeoutSec, String subject) {
+    private String callStageWithRevise(ChatModelPort chatModel, String systemPrompt, String userInput, SseEmitter emitter, String stage, String mode, ConcurrentHashMap<String, BlockingQueue<String>> copilotQueues, int timeoutSec, String subject) {
         Object currentInput = userInput;
         for (int round = 0; round < 5; ++round) {
             Object content = this.callAgent(chatModel, systemPrompt, (String)currentInput, emitter, stage, mode, timeoutSec, subject);
@@ -296,7 +295,7 @@ public class AddrfPipeline {
         return this.callAgent(chatModel, systemPrompt, userInput, emitter, stage, mode, timeoutSec, subject);
     }
 
-    private void asyncReview(AddrfResult result, DashScopeChatModel chatModel, String devPrompt, SseEmitter emitter, String k12Ctx, String subject, Long userId) {
+    private void asyncReview(AddrfResult result, ChatModelPort chatModel, String devPrompt, SseEmitter emitter, String k12Ctx, String subject, Long userId) {
         for (int retryCount = 0; !(retryCount > 2 || result.development != null && result.development.startsWith(DEGRADED_PREFIX)); ++retryCount) {
             String reviewPrompt = this.loadPrompt("addrf_review", userId) + "\n\n\u8bfe\u7a0b\u6807\u51c6\uff1a\n" + k12Ctx;
             result.review = this.callAgent(chatModel, reviewPrompt, result.development, null, "review", "quick", 60, subject);
@@ -323,7 +322,7 @@ public class AddrfPipeline {
         }
     }
 
-    private String callAgent(DashScopeChatModel chatModel, String systemPrompt, String userInput, SseEmitter emitter, String stage, String mode, String subject) {
+    private String callAgent(ChatModelPort chatModel, String systemPrompt, String userInput, SseEmitter emitter, String stage, String mode, String subject) {
         return this.callAgent(chatModel, systemPrompt, userInput, emitter, stage, mode, 60, subject);
     }
 
@@ -337,11 +336,11 @@ public class AddrfPipeline {
         return 8000;
     }
 
-    private String callAgent(DashScopeChatModel chatModel, String systemPrompt, String userInput, SseEmitter emitter, String stage, String mode, int timeoutSec) {
+    private String callAgent(ChatModelPort chatModel, String systemPrompt, String userInput, SseEmitter emitter, String stage, String mode, int timeoutSec) {
         return this.callAgent(chatModel, systemPrompt, userInput, emitter, stage, mode, timeoutSec, null);
     }
 
-    private String callAgent(DashScopeChatModel chatModel, String systemPrompt, String userInput, SseEmitter emitter, String stage, String mode, int timeoutSec, String subject) {
+    private String callAgent(ChatModelPort chatModel, String systemPrompt, String userInput, SseEmitter emitter, String stage, String mode, int timeoutSec, String subject) {
         int maxTokens = this.resolveMaxTokens(stage, subject);
         Future<String> future = this.executor.submit(() -> {
             try {

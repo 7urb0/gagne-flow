@@ -22,6 +22,14 @@ import org.springframework.stereotype.Service;
 @Service
 public class VectorSearchService {
     private static final Logger logger = LoggerFactory.getLogger(VectorSearchService.class);
+
+    /**
+     * 反哺教案参与检索的最低质量分数门槛 (RAG 反哺质量闭环)。
+     * 低于该分数的 generated_lesson_plan 不参与检索，宁缺毋滥；
+     * k12_curriculum 与无 _user_id 的上传文档不受影响（无 _score 字段）。
+     */
+    static final int MIN_LESSON_PLAN_SCORE = 85;
+
     @Autowired
     private MilvusServiceClient milvusClient;
     @Autowired
@@ -76,13 +84,13 @@ public class VectorSearchService {
         // P0修复: 使用 L2 距离，与索引端 MetricType 一致
         SearchParam.Builder builder = SearchParam.newBuilder().withCollectionName("biz").withVectorFieldName("vector").withVectors(Collections.singletonList(queryVector)).withTopK(Integer.valueOf(topK)).withMetricType(MetricType.L2).withOutFields(List.of("id", "content", "metadata")).withParams(String.format("{\"nprobe\":%d}", nprobeVal));
         if (userId != null && userId > 0L) {
-            builder.withExpr(String.format("metadata[\"_user_id\"] == \"%s\" || metadata[\"_source\"] == \"k12_curriculum\" || not exists metadata[\"_user_id\"]", String.valueOf(userId)));
+            builder.withExpr(buildSearchExpr(userId));
         }
         if ((searchResponse = this.milvusClient.search(searchParam = builder.build())).getStatus() != 0) {
             throw new RuntimeException("\u5411\u91cf\u641c\u7d22\u5931\u8d25: " + searchResponse.getMessage());
         }
         SearchResultsWrapper wrapper = new SearchResultsWrapper(((SearchResults)searchResponse.getData()).getResults());
-        ArrayList<SearchResult> results = new ArrayList<SearchResult>();
+        ArrayList<SearchResult> results = new ArrayList<>();
         for (int i = 0; i < wrapper.getRowRecords(0).size(); ++i) {
             SearchResult result = new SearchResult();
             result.setId((String)((SearchResultsWrapper.IDScore)wrapper.getIDScore(0).get(i)).get("id"));
@@ -97,6 +105,22 @@ public class VectorSearchService {
             results.add(result);
         }
         return results;
+    }
+
+    /**
+     * 构造 Milvus 检索过滤表达式 (RAG 反哺质量闭环)。
+     * 质量分层: generated_lesson_plan 来源仅 _score >= MIN_LESSON_PLAN_SCORE 的教案进入候选；
+     * 用户上传文档 (有 _user_id)、教育部课标原文 (curriculum_2022, 无 _user_id) 不受影响。
+     * 注意: 表达式中的 _score 为数值比较，与写入端 metadata.put("_score", score) 类型一致。
+     */
+    static String buildSearchExpr(Long userId) {
+        String uid = String.valueOf(userId != null ? userId : 0L);
+        // 用户数据 + 反哺教案分数门槛 + 公共课标原文(无归属) + 无归属文档
+        return String.format(
+                "(metadata[\"_user_id\"] == \"%s\" && (metadata[\"_source\"] != \"generated_lesson_plan\""
+                        + " || metadata[\"_score\"] >= %d))"
+                        + " || not exists metadata[\"_user_id\"]",
+                uid, MIN_LESSON_PLAN_SCORE);
     }
 
     public List<SearchResult> searchWithRerank(String query) {

@@ -1,5 +1,6 @@
 package com.gagneflow.service.rag;
 
+import com.fasterxml.jackson.annotation.JsonIgnoreProperties;
 import com.fasterxml.jackson.annotation.JsonProperty;
 import com.fasterxml.jackson.core.JsonProcessingException;
 import com.fasterxml.jackson.databind.ObjectMapper;
@@ -25,7 +26,7 @@ public class RerankService {
     private static final String RERANK_API_URL = "https://dashscope.aliyuncs.com/api/v1/services/rerank/text-rerank/text-rerank";
     @Value(value="${spring.ai.dashscope.api-key}")
     private String apiKey;
-    @Value(value="${dashscope.rerank.model:gte-rerank}")
+    @Value(value="${dashscope.rerank.model:qwen3-rerank}")
     private String model;
     @Value(value="${dashscope.rerank.top-n:3}")
     private int defaultTopN;
@@ -230,6 +231,8 @@ public class RerankService {
         }
     }
 
+    /** qwen3-rerank 响应含 request_id 等附加字段，忽略未知字段避免反序列化失败 */
+    @JsonIgnoreProperties(ignoreUnknown = true)
     private static class RerankResponse {
         private RerankOutput output;
         private Object usage;

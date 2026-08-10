@@ -187,6 +187,51 @@ class RagServiceTest {
         assertNotNull(name);
     }
 
+    @Test
+    @DisplayName("来源优先级: 用户文档 > 课标 > 历史教案")
+    void buildContextWithCitations_SourcePriority_OrdersBySource() {
+        List<VectorSearchService.SearchResult> results = new ArrayList<>();
+        // 乱序输入: 教案、课标、用户文档
+        results.add(createResult("1", "教案内容", 0.9f, "{\"_source\":\"generated_lesson_plan\"}"));
+        results.add(createResult("2", "课标内容", 0.8f, "{\"_source\":\"curriculum_2022\",\"_stage\":\"小学\"}"));
+        results.add(createResult("3", "上传文档内容", 0.7f, "{\"_file_name\":\"用户教案.pdf\"}"));
+
+        String context = ragService.buildContextWithCitations(results);
+
+        int docIdx = context.indexOf("上传文档内容");
+        int k12Idx = context.indexOf("课标内容");
+        int planIdx = context.indexOf("教案内容");
+        assertTrue(docIdx >= 0 && k12Idx >= 0 && planIdx >= 0, "三类来源都应注入");
+        assertTrue(docIdx < k12Idx, "用户上传文档应排在课标之前");
+        assertTrue(k12Idx < planIdx, "课标应排在历史教案之前");
+    }
+
+    @Test
+    @DisplayName("同来源内保持精排相关性顺序（稳定排序）")
+    void buildContextWithCitations_SameSource_KeepsRerankOrder() {
+        List<VectorSearchService.SearchResult> results = new ArrayList<>();
+        results.add(createResult("1", "课标高相关", 0.9f, "{\"_source\":\"curriculum_2022\"}"));
+        results.add(createResult("2", "课标低相关", 0.6f, "{\"_source\":\"curriculum_2022\"}"));
+
+        String context = ragService.buildContextWithCitations(results);
+
+        int highIdx = context.indexOf("课标高相关");
+        int lowIdx = context.indexOf("课标低相关");
+        assertTrue(highIdx < lowIdx, "同来源内应保持精排相关性顺序（高相关在前）");
+    }
+
+    @Test
+    @DisplayName("metadata 解析失败时按最低优先级处理，不抛异常")
+    void buildContextWithCitations_MalformedMetadata_NoException() {
+        List<VectorSearchService.SearchResult> results = new ArrayList<>();
+        results.add(createResult("1", "正常课标", 0.8f, "{\"_source\":\"curriculum_2022\"}"));
+        results.add(createResult("2", "损坏元数据", 0.7f, "{bad json"));
+
+        String context = ragService.buildContextWithCitations(results);
+        assertTrue(context.contains("正常课标"));
+        assertTrue(context.contains("损坏元数据"));
+    }
+
     // ============================================================
     // Helper
     // ============================================================
