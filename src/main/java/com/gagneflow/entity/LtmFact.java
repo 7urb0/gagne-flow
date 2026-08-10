@@ -39,6 +39,14 @@ public class LtmFact {
     @Column(nullable = false)
     private Instant createTime = Instant.now();
 
+    /** 最近一次被检索命中的时间(epoch ms), 用于时间衰减加权; 0 表示未记录 */
+    @Column(nullable = false)
+    private Long lastAccessTime = 0L;
+
+    /** 被检索命中次数, 用于访问频率增益 */
+    @Column(nullable = false)
+    private Integer accessCount = 0;
+
     public LtmFact() {
     }
 
@@ -72,4 +80,10 @@ public class LtmFact {
 
     public Instant getCreateTime() { return createTime; }
     public void setCreateTime(Instant createTime) { this.createTime = createTime; }
+
+    public Long getLastAccessTime() { return lastAccessTime; }
+    public void setLastAccessTime(Long lastAccessTime) { this.lastAccessTime = lastAccessTime; }
+
+    public Integer getAccessCount() { return accessCount; }
+    public void setAccessCount(Integer accessCount) { this.accessCount = accessCount; }
 }
