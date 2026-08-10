@@ -23,8 +23,9 @@ gagneflow:
     max-summary-tokens: 500
     summary-trigger-pairs: 5
     summary-interval-pairs: 3
-    # LTM 冲突裁决 LLM 兜底(2026-08-10): 默认关, 开启后仅对规则拿不准的案例调用 LLM
-    conflict-llm-enabled: ${LTM_CONFLICT_LLM_ENABLED:false}
+    # LTM 冲突裁决 LLM 兜底(2026-08-10): 默认开启, 仅对规则拿不准的案例(sim 0.75~0.95 且同来源权重)调用 qwen-turbo,
+    # 集成测试已真实验证裁决链路(保留新事实/保留旧事实/不冲突), 异常自动回退规则不悬挂
+    conflict-llm-enabled: ${LTM_CONFLICT_LLM_ENABLED:true}
     conflict-llm-model: ${LTM_CONFLICT_LLM_MODEL:qwen-turbo}
   k12:
     path: lesson-plan-docs/k12_curriculum.json

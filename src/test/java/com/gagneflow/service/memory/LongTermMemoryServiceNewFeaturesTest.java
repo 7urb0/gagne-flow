@@ -36,6 +36,7 @@ class LongTermMemoryServiceNewFeaturesTest {
     @Mock private HashOperations<String, Object, Object> hashOps;
     @Mock private VectorEmbeddingService embeddingService;
     @Mock private com.gagneflow.repository.LtmFactRepository ltmFactRepository;
+    @Mock private com.alibaba.cloud.ai.dashscope.api.DashScopeApi dashScopeApi;
 
     private LongTermMemoryService service;
 
@@ -45,7 +46,7 @@ class LongTermMemoryServiceNewFeaturesTest {
 
     @BeforeEach
     void setUp() {
-        service = new LongTermMemoryService(redisTemplate, embeddingService, ltmFactRepository);
+        service = new LongTermMemoryService(redisTemplate, embeddingService, ltmFactRepository, dashScopeApi);
         when(redisTemplate.opsForValue()).thenReturn(valueOps);
         when(redisTemplate.opsForSet()).thenReturn(setOps);
         when(redisTemplate.opsForHash()).thenReturn(hashOps);
@@ -68,6 +69,13 @@ class LongTermMemoryServiceNewFeaturesTest {
         LongTermMemoryService.MemoryFact f = fact(text);
         f.setSourcePhase(source);
         return f;
+    }
+
+    /** 设置 LLM 冲突裁决开关: 利用反射设置 private 字段 */
+    private void setLlmEnabled(boolean enabled) throws Exception {
+        java.lang.reflect.Field f = LongTermMemoryService.class.getDeclaredField("conflictLlmEnabled");
+        f.setAccessible(true);
+        f.setBoolean(service, enabled);
     }
 
     @Nested
@@ -185,6 +193,52 @@ class LongTermMemoryServiceNewFeaturesTest {
 
             // 无否定词反转 => 不是矛盾, 旧事实不应被删
             verify(redisTemplate, never()).delete(contains("gagneflow:ltm:detail:old-fact"));
+        }
+    }
+
+    @Nested
+    @DisplayName("LLM 冲突裁决兜底")
+    class LlmConflictAdjudication {
+
+        /** mock 已有事实: 高相似但无否定反转 + 同来源权重 -> 规则拿不准, 走 LLM */
+        private void mockAmbiguousExisting(String oldText, String oldSource) {
+            when(setOps.members(anyString())).thenReturn(Set.of("old-llm"));
+            when(valueOps.multiGet(anyList()))
+                    .thenReturn(List.of(oldText + "|" + oldSource + "|0|0"));
+            // 新旧向量相似但不相同(非等比缩放): 旧 [0.1,0.2,0.3] vs 新 [0.3,0.1,0.2]
+            // => 余弦相似度 ~0.79, 落 0.75~0.95 区间(规则拿不准)
+            when(embeddingService.generateEmbedding(anyString())).thenAnswer(inv -> {
+                String t = inv.getArgument(0);
+                // 先判否定词(新事实), 再判启发式(旧事实), 避免"不喜欢启发式"误入旧分支
+                if (t.contains("不")) return List.of(0.3f, 0.1f, 0.2f);
+                if (t.contains("启发式")) return List.of(0.1f, 0.2f, 0.3f);
+                return List.of(0.5f, 0.5f, 0.5f);
+            });
+        }
+
+        @Test
+        @DisplayName("LLM 调用异常(无真实 API) -> 回退规则, 写入不悬挂")
+        void llmFailureFallsBackToRule() throws Exception {
+            setLlmEnabled(true);
+            // 同义改写场景(无否定反转, 规则拿不准): 旧"喜欢启发式" vs 新"偏爱引导式"
+            // sim ~0.93 落区间, isContradictory=false, 同权重 USER -> 触发 LLM 兜底
+            mockAmbiguousExisting("用户喜欢启发式教学", "USER_EXPLICIT");
+            // dashScopeApi 是 mock 且未 stub -> DashScopeChatModel.call 抛异常
+            // -> llmAdjudicateConflict catch -> 返回 null -> 回退规则(视为无冲突 -> NONE)
+            service.storeFacts(USER_ID, SESSION_ID, List.of(fact("用户偏爱引导式提问", "USER_EXPLICIT")));
+            // 不悬挂: 新事实正常写入(Set.add 被调用)
+            verify(setOps, atLeastOnce()).add(anyString(), anyString());
+        }
+
+        @Test
+        @DisplayName("LLM 开关关闭时, 高相似同权重不触发 LLM, 正常写入")
+        void llmDisabledWritesNormally() throws Exception {
+            // 显式关闭开关(生产默认已开启, 测试需独立验证关闭行为)
+            setLlmEnabled(false);
+            mockAmbiguousExisting("用户喜欢启发式教学", "USER_EXPLICIT");
+            service.storeFacts(USER_ID, SESSION_ID, List.of(fact("用户偏爱引导式提问", "USER_EXPLICIT")));
+            // 未触发 LLM, 旧事实不被删除(规则同权重无法裁决 -> NONE)
+            verify(redisTemplate, never()).delete(contains("gagneflow:ltm:detail:old-llm"));
         }
     }
 
