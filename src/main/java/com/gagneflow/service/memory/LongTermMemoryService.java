@@ -11,6 +11,9 @@ import java.util.Set;
 import java.util.UUID;
 import java.util.stream.Collectors;
 
+import com.alibaba.cloud.ai.dashscope.api.DashScopeApi;
+import com.alibaba.cloud.ai.dashscope.chat.DashScopeChatModel;
+import com.alibaba.cloud.ai.dashscope.chat.DashScopeChatOptions;
 import com.fasterxml.jackson.core.type.TypeReference;
 import com.fasterxml.jackson.databind.ObjectMapper;
 import com.gagneflow.entity.LtmFact;
@@ -18,6 +21,11 @@ import com.gagneflow.repository.LtmFactRepository;
 import com.gagneflow.service.vector.VectorEmbeddingService;
 import org.slf4j.Logger;
 import org.slf4j.LoggerFactory;
+import org.springframework.ai.chat.messages.SystemMessage;
+import org.springframework.ai.chat.messages.UserMessage;
+import org.springframework.ai.chat.prompt.Prompt;
+import org.springframework.ai.chat.model.ChatResponse;
+import org.springframework.beans.factory.annotation.Value;
 import org.springframework.data.redis.core.StringRedisTemplate;
 import org.springframework.stereotype.Service;
 
@@ -39,6 +47,14 @@ public class LongTermMemoryService {
     public static final String SOURCE_USER = "USER_EXPLICIT";
     /** 事实来源阶段: 教案 Review>=70 回灌的最终决策 */
     public static final String SOURCE_FINAL = "FINAL_DECISION";
+
+    // ---- LLM 冲突裁决兜底(2026-08-10 新增) ----
+    /** LLM 裁决结果: 冲突且保留新事实 */
+    private static final String LLM_KEEP_NEW = "CONFLICT_KEEP_NEW";
+    /** LLM 裁决结果: 冲突且保留旧事实 */
+    private static final String LLM_KEEP_OLD = "CONFLICT_KEEP_OLD";
+    /** LLM 裁决结果: 不冲突, 正常写入 */
+    private static final String LLM_NO_CONFLICT = "NO_CONFLICT";
 
     // ---- 时间衰减与访问频率(2026-08-10 新增) ----
     /** 时间衰减半衰期(天): 30 天后事实权重衰减为一半 */
@@ -63,11 +79,21 @@ public class LongTermMemoryService {
     private final VectorEmbeddingService embeddingService;
     private final LtmFactRepository ltmFactRepository;
 
+    /** LLM 冲突裁决开关(默认关, 开启后仅对规则拿不准的案例调用 LLM) */
+    @Value(value="${gagneflow.ltm.conflict-llm-enabled:false}")
+    private boolean conflictLlmEnabled;
+    /** LLM 冲突裁决模型 */
+    @Value(value="${gagneflow.ltm.conflict-llm-model:qwen-turbo}")
+    private String conflictLlmModel;
+    /** 复用注入的 DashScopeApi 单例(同 QueryRewriter, 避免 OkHttp 连接池泄漏) */
+    private final DashScopeApi dashScopeApi;
+
     public LongTermMemoryService(StringRedisTemplate redisTemplate, VectorEmbeddingService embeddingService,
-                                 LtmFactRepository ltmFactRepository) {
+                                 LtmFactRepository ltmFactRepository, DashScopeApi dashScopeApi) {
         this.redisTemplate = redisTemplate;
         this.embeddingService = embeddingService;
         this.ltmFactRepository = ltmFactRepository;
+        this.dashScopeApi = dashScopeApi;
     }
 
     private String sessionKey(Long userId, String sessionId) {
@@ -129,6 +155,11 @@ public class LongTermMemoryService {
                     existingIds.remove(decision.targetId);
                     existingDetails.remove(decision.targetId);
                     conflicted++;
+                } else if (decision.isConflictDropNew()) {
+                    // LLM 兜底裁决: 保留旧事实, 丢弃新事实
+                    logger.info("冲突消解(LLM裁决): 保留旧事实 {} , 丢弃新事实 {}", decision.targetId, text);
+                    conflicted++;
+                    continue;
                 }
                 // ---- 写入 Redis ----
                 this.redisTemplate.opsForSet().add(key, factId);
@@ -438,11 +469,85 @@ public class LongTermMemoryService {
             if (sim >= DUP_SIM_THRESHOLD) {
                 return new IntegrationDecision(IntegrationDecisionType.DUPLICATE, oldId, oldSource);
             }
+            // 规则明确判定矛盾: 否定词反转
             if (sim >= CONFLICT_SIM_MIN && sim <= CONFLICT_SIM_MAX && this.isContradictory(oldText, newText)) {
                 return new IntegrationDecision(IntegrationDecisionType.CONFLICT, oldId, oldSource);
             }
+            // LLM 兜底(2026-08-10): 规则拿不准的场景 ——
+            //   a) 高相似(0.75~0.95)但无否定词反转(同义改写/复杂句式, 规则无法裁决)
+            //   b) 来源权重相同(USER vs USER / FINAL vs FINAL, 规则无法用权重裁决)
+            if (this.conflictLlmEnabled
+                    && sim >= CONFLICT_SIM_MIN && sim <= CONFLICT_SIM_MAX
+                    && Math.abs(this.sourcePhaseWeight(newSource) - this.sourcePhaseWeight(oldSource)) < 0.001f) {
+                String llmVerdict = this.llmAdjudicateConflict(oldText, oldSource, newText, newSource);
+                if (LLM_KEEP_NEW.equals(llmVerdict)) {
+                    return new IntegrationDecision(IntegrationDecisionType.CONFLICT, oldId, oldSource);
+                }
+                if (LLM_KEEP_OLD.equals(llmVerdict)) {
+                    // 保留旧事实: 丢弃新事实(返回特殊标记, 由调用方跳过写入)
+                    return new IntegrationDecision(IntegrationDecisionType.CONFLICT_DROP_NEW, oldId, oldSource);
+                }
+                // NO_CONFLICT 或解析失败 -> 回退规则(视为无冲突, 正常写入)
+            }
         }
         return IntegrationDecision.NONE;
+    }
+
+    /**
+     * LLM 冲突裁决兜底(2026-08-10 新增)。
+     * 仅对规则拿不准的案例调用; 任何异常/超时/无法解析均返回 null(调用方回退规则裁决)。
+     * 输出约束为三选一标识, 无 JSON 解析风险。
+     */
+    private String llmAdjudicateConflict(String oldText, String oldSource, String newText, String newSource) {
+        if (this.dashScopeApi == null) return null;
+        try {
+            DashScopeChatModel model = DashScopeChatModel.builder()
+                    .dashScopeApi(this.dashScopeApi)
+                    .defaultOptions(DashScopeChatOptions.builder()
+                            .withModel(this.conflictLlmModel)
+                            .withTemperature(0.1)
+                            .withMaxToken(50)
+                            .build())
+                    .build();
+            String systemPrompt = """
+                    你是长期记忆冲突裁决器。用户对话中先后产生了两条可能矛盾的事实, 请判断它们是否真正矛盾,
+                    以及冲突时保留哪一条(以用户最新意图为准, 但用户明确声明优先于旧推断)。
+
+                    只输出以下三个标识之一, 不要输出任何其他内容:
+                    CONFLICT_KEEP_NEW    # 两条事实矛盾, 且保留新事实
+                    CONFLICT_KEEP_OLD    # 两条事实矛盾, 且保留旧事实
+                    NO_CONFLICT          # 两条事实不矛盾(可同时存在)
+
+                    判断要点:
+                    1. 先判断是否真矛盾(语义层面, 不仅是措辞不同)
+                    2. 若矛盾, 比较两者可信度: 用户明确声明(USER_EXPLICIT)/最终决策(FINAL_DECISION)高于摘要推断(SUMMARY_EXTRACTED)
+                    3. 可信度相同时, 保留更新的那条""";
+            String userMessage = "旧事实: " + oldText + " (来源: " + oldSource + ")\n"
+                    + "新事实: " + newText + " (来源: " + newSource + ")";
+            Prompt prompt = new Prompt(List.of(new SystemMessage(systemPrompt), new UserMessage(userMessage)));
+            ChatResponse response = model.call(prompt);
+            if (response != null && response.getResult() != null) {
+                String text = response.getResult().getOutput().getText();
+                if (text != null && !text.isBlank()) {
+                    String t = text.trim().toUpperCase();
+                    if (t.contains(LLM_KEEP_NEW)) {
+                        logger.info("LTM LLM 冲突裁决: 旧={} vs 新={} -> 保留新事实", oldText, newText);
+                        return LLM_KEEP_NEW;
+                    }
+                    if (t.contains(LLM_KEEP_OLD)) {
+                        logger.info("LTM LLM 冲突裁决: 旧={} vs 新={} -> 保留旧事实", oldText, newText);
+                        return LLM_KEEP_OLD;
+                    }
+                    if (t.contains(LLM_NO_CONFLICT)) {
+                        logger.info("LTM LLM 冲突裁决: 旧={} vs 新={} -> 不冲突(并存)", oldText, newText);
+                        return LLM_NO_CONFLICT;
+                    }
+                }
+            }
+        } catch (Exception e) {
+            logger.warn("LTM LLM 冲突裁决失败, 回退规则: {}", e.getMessage());
+        }
+        return null;
     }
 
     /** 计算两条事实的向量余弦相似度(取缓存向量, 缺失则实时计算) */
@@ -646,7 +751,7 @@ public class LongTermMemoryService {
     }
 
     /** 整合决策枚举 + 携带目标 factId/来源 */
-    private enum IntegrationDecisionType { NONE, DUPLICATE, CONFLICT }
+    private enum IntegrationDecisionType { NONE, DUPLICATE, CONFLICT, CONFLICT_DROP_NEW }
 
     private static class IntegrationDecision {
         static final IntegrationDecision NONE = new IntegrationDecision(IntegrationDecisionType.NONE, null, null);
@@ -658,6 +763,7 @@ public class LongTermMemoryService {
         }
         boolean isDuplicate() { return this.type == IntegrationDecisionType.DUPLICATE; }
         boolean isConflict() { return this.type == IntegrationDecisionType.CONFLICT; }
+        boolean isConflictDropNew() { return this.type == IntegrationDecisionType.CONFLICT_DROP_NEW; }
     }
 
     public static class MemoryFact {
