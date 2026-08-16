@@ -2,25 +2,31 @@
 # GagneFlow — 一键部署配置
 # 启动: docker compose up -d
 # 停止: docker compose down
+# 数据: MySQL 挂载本地 ./volumes/mysql(bind mount, 保留历史数据);
+#       Redis/Milvus 系使用命名卷(数据可重建)。
+# 2026-08-16 迁移审查修正:
+#   - MySQL 从命名卷改为 bind mount ./volumes/mysql, 修复与历史数据脱节问题
+#   - MYSQL_PASSWORD 走环境变量, 移除硬编码
+#   - MinIO 凭证字段更新为 MINIO_ROOT_USER/PASSWORD(旧字段已弃用)
+#   - 容器命名统一 gagneflow- 前缀
 # =============================================================================
-version: "3.8"
 services:
 
   # ===========================================================================
-  # MySQL 8.0 — 主数据库（教案、用户、会话消息）
+  # MySQL 8.0 — 主数据库（教案、用户、会话消息、LTM 事实）
   # ===========================================================================
   mysql:
     container_name: gagneflow-mysql
     image: mysql:8.0
     environment:
       MYSQL_ROOT_PASSWORD: ${MYSQL_ROOT_PASSWORD:-gagneflow123}
-      MYSQL_DATABASE: gagneflow
-      MYSQL_USER: gagneflow
-      MYSQL_PASSWORD: gagneflow123
+      MYSQL_DATABASE: ${MYSQL_DATABASE:-gagneflow}
+      MYSQL_USER: ${MYSQL_USER:-gagneflow}
+      MYSQL_PASSWORD: ${MYSQL_PASSWORD:-gagneflow123}
     ports:
       - "3306:3306"
     volumes:
-      - mysql-data:/var/lib/mysql
+      - ./volumes/mysql:/var/lib/mysql
     command: --character-set-server=utf8mb4 --collation-server=utf8mb4_unicode_ci
     healthcheck:
       test: ["CMD", "mysqladmin", "ping", "-h", "localhost"]
@@ -48,7 +54,7 @@ services:
   # Milvus 向量数据库 — 依赖 etcd (元数据) + MinIO (对象存储)
   # ===========================================================================
   etcd:
-    container_name: milvus-etcd
+    container_name: gagneflow-milvus-etcd
     image: quay.io/coreos/etcd:v3.5.18
     environment:
       - ETCD_AUTO_COMPACTION_MODE=revision
@@ -65,11 +71,11 @@ services:
       retries: 3
 
   minio:
-    container_name: milvus-minio
+    container_name: gagneflow-milvus-minio
     image: minio/minio:RELEASE.2023-03-20T20-16-18Z
     environment:
-      MINIO_ACCESS_KEY: minioadmin
-      MINIO_SECRET_KEY: minioadmin
+      MINIO_ROOT_USER: ${MINIO_ROOT_USER:-minioadmin}
+      MINIO_ROOT_PASSWORD: ${MINIO_ROOT_PASSWORD:-minioadmin}
     ports:
       - "9001:9001"
       - "9000:9000"
@@ -83,7 +89,7 @@ services:
       retries: 3
 
   milvus:
-    container_name: milvus-standalone
+    container_name: gagneflow-milvus-standalone
     image: milvusdb/milvus:v2.5.10
     command: ["milvus", "run", "standalone"]
     security_opt:
@@ -110,7 +116,7 @@ services:
   # Attu — Milvus 可视化管理界面 (http://localhost:8000)
   # ===========================================================================
   attu:
-    container_name: milvus-attu
+    container_name: gagneflow-milvus-attu
     image: zilliz/attu:v2.5
     ports:
       - "8000:3000"
@@ -120,7 +126,6 @@ services:
       - milvus
 
 volumes:
-  mysql-data:
   redis-data:
   etcd-data:
   minio-data:

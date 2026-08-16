@@ -30,6 +30,7 @@ class LongTermMemoryServiceExtendedTest {
     @Mock private HashOperations<String, Object, Object> hashOps;
     @Mock private VectorEmbeddingService embeddingService;
     @Mock private com.gagneflow.repository.LtmFactRepository ltmFactRepository;
+    @Mock private com.alibaba.cloud.ai.dashscope.api.DashScopeApi dashScopeApi;
 
     private LongTermMemoryService service;
 
@@ -38,7 +39,7 @@ class LongTermMemoryServiceExtendedTest {
 
     @BeforeEach
     void setUp() {
-        service = new LongTermMemoryService(redisTemplate, embeddingService, ltmFactRepository);
+        service = new LongTermMemoryService(redisTemplate, embeddingService, ltmFactRepository, dashScopeApi);
         when(redisTemplate.opsForValue()).thenReturn(valueOps);
         when(redisTemplate.opsForSet()).thenReturn(setOps);
         when(redisTemplate.opsForHash()).thenReturn(hashOps);
