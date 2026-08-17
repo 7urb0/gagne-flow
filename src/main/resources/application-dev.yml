@@ -5,10 +5,10 @@
 spring:
   datasource:
     # 开发环境使用 docker-compose 中定义的默认凭据
-    username: gagneflow
-    password: gagneflow123
+    url: jdbc:mysql://${DB_HOST:localhost}:${DB_PORT:3306}/${DB_NAME:gagneflow}?useSSL=false&allowPublicKeyRetrieval=true&serverTimezone=Asia/Shanghai&characterEncoding=UTF-8
+    username: ${DB_USERNAME:gagneflow}
+    password: ${DB_PASSWORD:gagneflow123}
 
-# 开发环境关闭 JWT secret 校验（生产环境会强制要求）
-# gagneflow:
-#   auth:
-#     jwt-secret: gagneflow-demo-secret-key-2026-is-32-bytes
+# 开发环境 JWT secret 说明:
+# 主配置强制 ${JWT_SECRET}, dev 不提供默认值——本地启动需在环境/运行配置中设置 JWT_SECRET
+# (避免"看似能跑实则凭据薄弱"的安全假象)

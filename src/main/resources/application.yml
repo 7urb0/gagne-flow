@@ -67,7 +67,8 @@ spring:
       # SSE 流式响应在初次 REQUEST 中已完成鉴权，异步写入不需要重复校验
       dispatcher-types: request, error
   datasource:
-    url: jdbc:mysql://localhost:3306/gagneflow?useSSL=false&allowPublicKeyRetrieval=true&serverTimezone=Asia/Shanghai&characterEncoding=UTF-8
+    # DB 连接由环境变量注入(支持本地/容器/生产远程), 无硬编码 localhost
+    url: jdbc:mysql://${DB_HOST:localhost}:${DB_PORT:3306}/${DB_NAME:gagneflow}?useSSL=false&allowPublicKeyRetrieval=true&serverTimezone=Asia/Shanghai&characterEncoding=UTF-8
     driver-class-name: com.mysql.cj.jdbc.Driver
     # L6修复: 已移除默认值，生产环境必须通过环境变量设置
     # 本地开发请使用 dev profile: --spring.profiles.active=dev 或在 IDE 中设置

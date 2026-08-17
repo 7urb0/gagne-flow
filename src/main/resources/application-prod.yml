@@ -6,6 +6,15 @@ gagneflow:
     jwt-secret: ${JWT_SECRET}
 
 spring:
+  datasource:
+    # 生产必须显式注入全部 DB 连接参数(无默认值, 缺任一即启动失败, 防误连本地库)
+    url: jdbc:mysql://${DB_HOST}:${DB_PORT:3306}/${DB_NAME}?useSSL=true&allowPublicKeyRetrieval=true&serverTimezone=Asia/Shanghai&characterEncoding=UTF-8
+    driver-class-name: com.mysql.cj.jdbc.Driver
+    username: ${DB_USERNAME}
+    password: ${DB_PASSWORD}
+  jpa:
+    hibernate:
+      ddl-auto: validate
   data:
     redis:
       host: ${REDIS_HOST}

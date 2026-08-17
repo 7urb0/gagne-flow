@@ -114,8 +114,9 @@ GagneFlow 面向 K12 教育场景，提供从教学需求输入到完整教案�
 
 ```
 L1 短期窗口 (Redis)       → 最近 6 轮对话，上限 2000 tokens
-L2 摘要压缩               → 对话超过 5 轮且新增 ≥ 3 轮时 LLM 压缩
-L3 长期语义记忆 (Redis+向量) → 结构化事实提取，7 类语义检索，30 天 TTL
+L2 摘要压缩               → 对话超过 5 轮且新增 ≥ 3 轮时 LLM 压缩，压缩比守卫
+L3 长期语义记忆 (Redis+向量+MySQL兜底) → 结构化事实提取，7 类检索，30 天 TTL，
+                             时间衰减 + 访问频率加权 + 冲突消解(LLM兜底) + 跨会话全局
 ```
 
 ---
@@ -243,7 +244,7 @@ GagneFlow/
 │   ├── application-dev.yml         # 开发环境配置
 │   └── application-prod.yml        # 生产环境配置
 │
-├── src/test/java/                  # 测试 (18 个文件)
+├── src/test/java/                  # 测试 (54 个文件 / 544 用例)
 ├── config/checkstyle/              # Checkstyle 规则
 ├── docs/                           # 项目文档
 ├── docker-compose.yml              # Docker 编排
