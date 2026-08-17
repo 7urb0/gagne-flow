@@ -19,4 +19,8 @@ public interface PromptVersionRepository extends JpaRepository<PromptVersion, Lo
     boolean existsByPromptNameAndVersionNumber(String promptName, int versionNumber);
 
     int countByPromptName(String promptName);
+
+    /** 查询所有已注册的 prompt 名称(去重, 升序) */
+    @org.springframework.data.jpa.repository.Query("SELECT DISTINCT p.promptName FROM PromptVersion p ORDER BY p.promptName")
+    List<String> findDistinctPromptNames();
 }

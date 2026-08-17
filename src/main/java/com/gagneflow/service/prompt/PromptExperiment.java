@@ -1,6 +1,7 @@
 package com.gagneflow.service.prompt;
 
 import java.util.HashMap;
+import java.util.LinkedHashMap;
 import java.util.Map;
 
 import org.slf4j.Logger;
@@ -16,8 +17,12 @@ public class PromptExperiment {
     /** 是否启用 A/B 实验 */
     private boolean enabled = false;
 
-    /** { promptName: { versionNumber: ratio } } 例: {"addrf_review": {1: 0.7, 2: 0.3}} */
-    private Map<String, Map<Integer, Double>> splits = new HashMap<>();
+    /**
+     * { promptName: { versionNumber: ratio } } 例: {"addrf_review": {1: 0.7, 2: 0.3}}
+     * 使用 LinkedHashMap 保持配置顺序, 保证 selectVersion 累积概率遍历确定性
+     * (HashMap 迭代顺序随机会破坏"同一用户恒定版本"的设计)
+     */
+    private Map<String, Map<Integer, Double>> splits = new LinkedHashMap<>();
 
     public boolean isEnabled() { return enabled; }
     public void setEnabled(boolean enabled) { this.enabled = enabled; }

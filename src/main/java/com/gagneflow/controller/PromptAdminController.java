@@ -47,14 +47,8 @@ public class PromptAdminController {
 
     @GetMapping
     public ResponseEntity<List<String>> listPromptNames() {
-        List<String> names = promptRegistry.listVersions("addrf_analysis").stream()
-                .map(PromptVersion::getPromptName)
-                .distinct()
-                .collect(Collectors.toList());
-        // 补充：扫描所有已知 prompt 名称
-        return ResponseEntity.ok(names.isEmpty()
-                ? List.of("addrf_analysis", "addrf_design", "addrf_development", "addrf_review")
-                : names);
+        // 从 DB 查全部已注册 prompt 名称(含对话 agent 与 addrf 模板), 不硬编码
+        return ResponseEntity.ok(promptRegistry.listPromptNames());
     }
 
     @PostMapping("/{name}/{version}/activate")

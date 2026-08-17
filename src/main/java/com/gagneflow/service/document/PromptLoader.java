@@ -6,8 +6,11 @@ import java.nio.charset.StandardCharsets;
 import java.nio.file.Files;
 import java.nio.file.Path;
 import java.nio.file.Paths;
+import java.util.List;
 import java.util.Map;
 import java.util.concurrent.ConcurrentHashMap;
+import java.util.stream.Collectors;
+import java.util.stream.Stream;
 import org.slf4j.Logger;
 import org.slf4j.LoggerFactory;
 import org.springframework.beans.factory.annotation.Value;
@@ -22,35 +25,55 @@ public class PromptLoader {
 
     @PostConstruct
     public void init() {
-        logger.info("PromptLoader \u542f\u52a8\uff0c\u8def\u5f84: {}", (Object)this.promptsPath);
-        this.preloadPrompt("v1/decision_guide");
-        this.preloadPrompt("v1/planner");
-        this.preloadPrompt("v1/executor");
-        this.preloadPrompt("v1/retrieval");
-        this.preloadPrompt("v1/review");
-        this.preloadPrompt("v1/supervisor");
-        this.preloadPrompt("v1/addrf/addrf_analysis");
-        this.preloadPrompt("v1/addrf/addrf_design");
-        this.preloadPrompt("v1/addrf/addrf_development");
-        this.preloadPrompt("v1/addrf/addrf_review");
-        logger.info("PromptLoader \u521d\u59cb\u5316\u5b8c\u6210\uff0c\u5df2\u52a0\u8f7d {} \u4e2a\u63d0\u793a\u8bcd", (Object)this.cache.size());
+        logger.info("PromptLoader 启动, 路径: {}", (Object)this.promptsPath);
+        // 动态扫描目录下所有 .md, 避免硬编码列表漏新增模板
+        // 兼容 v1/*.md 与 v1/addrf/*.md 两种结构, cache key 为去掉 .md 的相对路径
+        List<String> promptNames = this.scanPromptNames();
+        if (promptNames.isEmpty()) {
+            logger.warn("Prompt 目录未扫描到任何 .md 文件: {}", this.promptsPath);
+            return;
+        }
+        for (String name : promptNames) {
+            this.preloadPrompt(name);
+        }
+        logger.info("PromptLoader 初始化完成, 已加载 {} 个提示词", (Object)this.cache.size());
+    }
+
+    /** 扫描 prompts 目录下所有 .md 文件, 返回相对路径 key(如 v1/planner、v1/addrf/addrf_analysis) */
+    private List<String> scanPromptNames() {
+        Path baseDir = Paths.get(this.promptsPath);
+        if (!Files.isDirectory(baseDir)) {
+            logger.warn("Prompt 目录不存在: {}", baseDir.toAbsolutePath());
+            return List.of();
+        }
+        try (Stream<Path> walk = Files.walk(baseDir)) {
+            return walk
+                    .filter(Files::isRegularFile)
+                    .filter(p -> p.toString().endsWith(".md"))
+                    .map(p -> baseDir.relativize(p).toString().replace('\\', '/').replace(".md", ""))
+                    .sorted()
+                    .collect(Collectors.toList());
+        } catch (IOException e) {
+            logger.warn("Prompt 目录扫描失败: {}", e.getMessage());
+            return List.of();
+        }
     }
 
     private void preloadPrompt(String name) {
         try {
             String content = this.loadFromFile(name);
             this.cache.put(name, content);
-            logger.info("\u52a0\u8f7d\u63d0\u793a\u8bcd: {} ({} \u5b57\u7b26)", (Object)name, (Object)content.length());
+            logger.info("加载提示词: {} ({} 字符)", (Object)name, (Object)content.length());
         }
         catch (IOException e) {
-            throw new IllegalStateException(String.format("\u63d0\u793a\u8bcd\u6587\u4ef6\u7f3a\u5931: %s/%s.md\u3002\u8bf7\u68c0\u67e5 agent-config/prompts/ \u76ee\u5f55\u4e0b\u6587\u4ef6\u662f\u5426\u5b8c\u6574\u3002", this.promptsPath, name), e);
+            throw new IllegalStateException(String.format("提示词文件缺失: %s/%s.md。请检查 agent-config/prompts/ 目录下文件是否完整。", this.promptsPath, name), e);
         }
     }
 
     public String load(String name) {
         String content = this.cache.get(name);
         if (content == null) {
-            throw new IllegalStateException("\u63d0\u793a\u8bcd '" + name + "' \u672a\u5728\u542f\u52a8\u65f6\u52a0\u8f7d\uff0c\u8bf7\u68c0\u67e5 preloadPrompt \u5217\u8868\u662f\u5426\u5305\u542b\u6b64\u540d\u79f0\u3002");
+            throw new IllegalStateException("提示词 '" + name + "' 未在启动时加载, 请检查提示词文件是否存在于 " + this.promptsPath + " 目录。");
         }
         return content;
     }

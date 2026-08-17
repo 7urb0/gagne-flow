@@ -96,24 +96,23 @@ class PromptAdminControllerTest {
         @Test
         @DisplayName("registry 有记录时返回 distinct 名称")
         void listNames_shouldReturnDistinct() {
-            when(promptRegistry.listVersions("addrf_analysis"))
-                    .thenReturn(List.of(version(1, true, null), version(2, true, null)));
+            when(promptRegistry.listPromptNames())
+                    .thenReturn(List.of("addrf_review", "planner"));
 
             ResponseEntity<List<String>> res = controller.listPromptNames();
 
             assertEquals(HttpStatus.OK, res.getStatusCode());
-            assertEquals(List.of("addrf_review"), res.getBody());
+            assertEquals(List.of("addrf_review", "planner"), res.getBody());
         }
 
         @Test
-        @DisplayName("registry 无记录时返回默认 4 个 addrf 名称")
-        void listNames_empty_returnsDefaults() {
-            when(promptRegistry.listVersions("addrf_analysis")).thenReturn(List.of());
+        @DisplayName("registry 无记录时返回空列表(不再硬编码)")
+        void listNames_empty_returnsEmptyList() {
+            when(promptRegistry.listPromptNames()).thenReturn(List.of());
 
             ResponseEntity<List<String>> res = controller.listPromptNames();
 
-            assertEquals(List.of("addrf_analysis", "addrf_design", "addrf_development", "addrf_review"),
-                    res.getBody());
+            assertEquals(List.of(), res.getBody());
         }
     }
 

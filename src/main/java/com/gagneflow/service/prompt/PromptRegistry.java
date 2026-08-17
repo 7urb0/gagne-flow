@@ -17,6 +17,7 @@ import org.slf4j.Logger;
 import org.slf4j.LoggerFactory;
 import org.springframework.beans.factory.annotation.Value;
 import org.springframework.stereotype.Service;
+import org.springframework.transaction.annotation.Transactional;
 
 @Service
 public class PromptRegistry {
@@ -73,16 +74,27 @@ public class PromptRegistry {
         String promptName = fileName.replace(".md", "");
         Path relative = Paths.get(promptsBasePath).relativize(file);
 
-        if (repo.existsByPromptNameAndVersionNumber(promptName, versionNumber)) {
-            logger.trace("Prompt 已存在，跳过: {} v{}", promptName, versionNumber);
-            return;
-        }
-
         try {
             // 传入去 .md 的相对路径，与 PromptLoader.preloadPrompt 的 cache key 一致
             String loaderKey = relative.toString().replace('\\', '/').replace(".md", "");
-            String content = fileLoader.load(loaderKey);            if (content == null || content.isBlank()) {
+            String content = fileLoader.load(loaderKey);
+            if (content == null || content.isBlank()) {
                 logger.warn("Prompt 文件内容为空: {}", relative);
+                return;
+            }
+
+            // 已存在时比对内容: 文件更新则同步 DB(否则跳过, 保证幂等且文件修改能生效)
+            if (repo.existsByPromptNameAndVersionNumber(promptName, versionNumber)) {
+                repo.findByPromptNameAndVersionNumber(promptName, versionNumber).ifPresent(existing -> {
+                    if (!content.equals(existing.getContent())) {
+                        existing.setContent(content);
+                        existing.setDescription("从文件系统同步: " + relative);
+                        repo.save(existing);
+                        logger.info("Prompt 文件已更新, 同步 DB: {} v{}", promptName, versionNumber);
+                    } else {
+                        logger.trace("Prompt 已存在且未变化, 跳过: {} v{}", promptName, versionNumber);
+                    }
+                });
                 return;
             }
 
@@ -131,8 +143,17 @@ public class PromptRegistry {
         return repo.findByPromptNameOrderByVersionNumberDesc(promptName);
     }
 
-    // === 管理 API ===
+    /** 列出所有已注册的 prompt 名称(从 DB 去重查询, 不硬编码) */
+    public List<String> listPromptNames() {
+        List<String> names = repo.findDistinctPromptNames();
+        if (names == null || names.isEmpty()) {
+            logger.warn("prompt_versions 表为空, 请检查启动 seed 是否执行");
+        }
+        return names != null ? names : List.of();
+    }
 
+    // === 管理 API ===
+    @Transactional
     public PromptVersion activate(String promptName, int versionNumber) {
         // 取消所有活跃
         repo.findByPromptNameAndActiveTrue(promptName).ifPresent(current -> {
@@ -145,10 +166,7 @@ public class PromptRegistry {
                         "Prompt " + promptName + " v" + versionNumber + " 不存在"));
         target.setActive(true);
         repo.save(target);
-        logger.info("切换活跃 Prompt: {} v{} → v{}",
-                promptName,
-                repo.findByPromptNameAndActiveTrue(promptName).isPresent() ? "?" : "none",
-                versionNumber);
+        logger.info("切换活跃 Prompt: {} → v{}", promptName, versionNumber);
         return target;
     }
 
