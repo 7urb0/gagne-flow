@@ -60,6 +60,7 @@ public class AddrfPipeline {
     private final FormatTool formatTool;
     private final SubjectFormatLoader subjectFormatLoader;
     private final PipelineStageConfig stageConfig;
+    private final PersonalizationContextService personalizationService;
     private final ThreadPoolExecutor executor;
     private final StringRedisTemplate redisTemplate;
     private volatile CompletableFuture<Void> reviewFuture;
@@ -74,6 +75,7 @@ public class AddrfPipeline {
                          PromptExperiment promptExperiment, PromptMetricsCollector promptMetrics,
                          K12CurriculumLoader k12Loader, FormatTool formatTool,
                          SubjectFormatLoader subjectFormatLoader, PipelineStageConfig stageConfig,
+                         PersonalizationContextService personalizationService,
                          StringRedisTemplate redisTemplate,
                          @Autowired(required=false) ThreadPoolExecutor executor) {
         this.promptLoader = promptLoader;
@@ -84,6 +86,7 @@ public class AddrfPipeline {
         this.formatTool = formatTool;
         this.subjectFormatLoader = subjectFormatLoader;
         this.stageConfig = stageConfig;
+        this.personalizationService = personalizationService;
         this.redisTemplate = redisTemplate;
         this.executor = executor != null ? executor : AddrfPipeline.createDefaultExecutor();
         // P3修复: 启动时校验并输出配置的阶段顺序
@@ -114,7 +117,7 @@ public class AddrfPipeline {
         return new ThreadPoolExecutor(2, 4, 60L, TimeUnit.SECONDS, new LinkedBlockingQueue<Runnable>(50), new ThreadPoolExecutor.CallerRunsPolicy());
     }
 
-    public AddrfResult execute(LessonPlanRequest request, ChatModelPort chatModel, SseEmitter emitter, String mode, ConcurrentHashMap<String, BlockingQueue<String>> copilotQueues, String sessionContext, Long userId) {
+    public AddrfResult execute(LessonPlanRequest request, ChatModelPort chatModel, SseEmitter emitter, String mode, ConcurrentHashMap<String, BlockingQueue<String>> copilotQueues, String sessionContext, Long userId, String sessionId) {
         boolean devDegraded;
         String enhancedDevPrompt;
         String k12Ctx;
@@ -153,6 +156,9 @@ public class AddrfPipeline {
                     designPromptBuilder.append("\n\n=== ").append(request.getSubject()).append("\u5b66\u79d1\u4e13\u5c5e\u8bbe\u8ba1\u8981\u6c42 ===\n").append(designExtra);
                 }
                 String enhancedDesignPrompt = designPromptBuilder.toString();
+                // 个性化注入: 用户偏好贯穿 Design 阶段(开关控制, 无记忆则跳过)
+                final String designPromptFinal = this.appendPersonalizedContext(
+                        enhancedDesignPrompt, userId, sessionId, "design");
                 String devInstr = this.subjectFormatLoader.getDevelopmentInstructions(request.getSubject());
                 String stageInstr = this.subjectFormatLoader.getStageInstructions(request.getStage());
                 StringBuilder devPromptBuilder = new StringBuilder(devPrompt);
@@ -163,8 +169,11 @@ public class AddrfPipeline {
                     devPromptBuilder.append("\n\n=== ").append(request.getStage()).append("\u5b66\u6bb5\u6559\u5b66\u6307\u5bfc ===\n").append(stageInstr);
                 }
                 enhancedDevPrompt = devPromptBuilder.toString();
+                // 个性化注入: 用户偏好贯穿 Development 阶段
+                final String devPromptFinal = this.appendPersonalizedContext(
+                        enhancedDevPrompt, userId, sessionId, "development");
                 CompletableFuture<Void> designFuture = CompletableFuture.runAsync(() -> {
-                    result.design = this.callStageWithRevise(chatModel, enhancedDesignPrompt, result.analysis, emitter, "design", mode, copilotQueues, 60, request.getSubject());
+                    result.design = this.callStageWithRevise(chatModel, designPromptFinal, result.analysis, emitter, "design", mode, copilotQueues, 60, request.getSubject());
                     logger.info("[ADDRF] Design \u5b8c\u6210, {} \u5b57\u7b26", (Object)(result.design != null ? result.design.length() : 0));
                 }, this.executor).exceptionally(ex -> {
                     logger.error("[ADDRF] Design \u9636\u6bb5\u5185\u90e8\u5f02\u5e38\u88ab\u5f02\u6b65\u4efb\u52a1\u6355\u83b7", ex);
@@ -172,7 +181,7 @@ public class AddrfPipeline {
                     return null;
                 });
                 devFuture = CompletableFuture.runAsync(() -> {
-                    result.development = this.callStageWithRevise(chatModel, enhancedDevPrompt, result.analysis, emitter, "development", mode, copilotQueues, 180, request.getSubject());
+                    result.development = this.callStageWithRevise(chatModel, devPromptFinal, result.analysis, emitter, "development", mode, copilotQueues, 180, request.getSubject());
                     logger.info("[ADDRF] Development \u5b8c\u6210, {} \u5b57\u7b26", (Object)(result.development != null ? result.development.length() : 0));
                 }, this.executor).exceptionally(ex -> {
                     logger.error("[ADDRF] Development \u9636\u6bb5\u5185\u90e8\u5f02\u5e38\u88ab\u5f02\u6b65\u4efb\u52a1\u6355\u83b7", ex);
@@ -227,7 +236,7 @@ public class AddrfPipeline {
             String finalSubject = request.getSubject();
             CompletableFuture<Void> reviewTask = CompletableFuture.runAsync(() -> {
                 logger.info("[ADDRF] Review \u540e\u53f0\u5f00\u59cb");
-                this.asyncReview(result, chatModel, enhancedDevPrompt, emitter, finalK12, finalSubject, userId);
+                this.asyncReview(result, chatModel, enhancedDevPrompt, emitter, finalK12, finalSubject, userId, sessionId);
                 logger.info("[ADDRF] Review \u540e\u53f0\u5b8c\u6210, \u8bc4\u5206: {}", (Object)result.score);
                 // HITL 检查: 判断是否需要人工审核
                 if (shouldRequestHumanReview(result, request.getSubject(), userId)) {
@@ -295,9 +304,11 @@ public class AddrfPipeline {
         return this.callAgent(chatModel, systemPrompt, userInput, emitter, stage, mode, timeoutSec, subject);
     }
 
-    private void asyncReview(AddrfResult result, ChatModelPort chatModel, String devPrompt, SseEmitter emitter, String k12Ctx, String subject, Long userId) {
+    private void asyncReview(AddrfResult result, ChatModelPort chatModel, String devPrompt, SseEmitter emitter, String k12Ctx, String subject, Long userId, String sessionId) {
         for (int retryCount = 0; !(retryCount > 2 || result.development != null && result.development.startsWith(DEGRADED_PREFIX)); ++retryCount) {
             String reviewPrompt = this.loadPrompt("addrf_review", userId) + "\n\n\u8bfe\u7a0b\u6807\u51c6\uff1a\n" + k12Ctx;
+            // 个性化注入: 用户评价标准入 Review 评分(核心), 避免按通用标准误判个性化教案
+            reviewPrompt = this.appendPersonalizedContext(reviewPrompt, userId, sessionId, "review");
             result.review = this.callAgent(chatModel, reviewPrompt, result.development, null, "review", "quick", 60, subject);
             if (result.review == null) {
                 result.review = "[\u7cfb\u7edf\u63d0\u793a: Review \u9636\u6bb5\u751f\u6210\u5931\u8d25]";
@@ -551,8 +562,24 @@ public class AddrfPipeline {
         return sb.toString();
     }
 
-    private String loadPrompt(String name, Long userId) {
+    /**
+     * 追加个性化上下文段到 prompt(2026-08-17 新增)。
+     * 无记忆/开关关闭/异常时原样返回, 不阻塞流水线。
+     */
+    private String appendPersonalizedContext(String prompt, Long userId, String sessionId, String stage) {
         try {
+            String personalized = this.personalizationService.getContext(userId, sessionId, stage);
+            if (personalized == null || personalized.isBlank()) {
+                return prompt;
+            }
+            return prompt + personalized;
+        } catch (Exception e) {
+            logger.warn("[ADDRF] {} 阶段个性化上下文注入失败, 跳过: {}", stage, e.getMessage());
+            return prompt;
+        }
+    }
+
+    private String loadPrompt(String name, Long userId) {        try {
             // Step 1: 查活跃版本号
             int activeVersion = this.promptRegistry.getActiveVersionNumber(name);
             // Step 2: 实验分流选版本（基于 userId hash 确定性分配）

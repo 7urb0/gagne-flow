@@ -17,7 +17,7 @@ import static org.junit.jupiter.api.Assertions.*;
 @DisplayName("AddrfPipeline unit tests")
 class AddrfPipelineTest {
 
-    private final AddrfPipeline defaultPipeline = new AddrfPipeline(null, null, null, null, null, null, null, new PipelineStageConfig(), null, null);
+    private final AddrfPipeline defaultPipeline = new AddrfPipeline(null, null, null, null, null, null, null, new PipelineStageConfig(), null, null, null);
 
     // ============================================================
     // extractScore tests

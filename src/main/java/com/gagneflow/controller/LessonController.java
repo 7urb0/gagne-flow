@@ -167,7 +167,7 @@ public class LessonController {
                             .withTopP(Double.valueOf(0.9)).build()).build();
             String sessionCtx = this.buildSessionContextForAddrf(uid, sid);
             AddrfPipeline.AddrfResult result = this.addrfPipeline.execute(
-                    req, new DashScopeChatModelPort(model), emitter, req.getMode(), this.copilotQueues, sessionCtx, uid);
+                    req, new DashScopeChatModelPort(model), emitter, req.getMode(), this.copilotQueues, sessionCtx, uid, sid);
             String html = result.html != null ? result.html : "<p>生成失败</p>";
             // 等待 Review 后台线程完成，拿到真实评分与 HITL 标志（score 由 asyncReview 异步写入）
             this.addrfPipeline.awaitReview(result, 240);

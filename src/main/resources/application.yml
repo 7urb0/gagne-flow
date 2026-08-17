@@ -38,6 +38,10 @@ gagneflow:
   lesson-plan:
     addrf-enabled: true
     k12-index-enabled: ${K12_INDEX_ENABLED:false}  # 已退役: 知识库由课标原文(curriculum_2022)接管, 默认不再灌自建知识点
+  # 记忆反哺: 用户偏好(LTM)注入 Design/Development/Review 阶段(2026-08-17)
+  personalization:
+    enabled: ${PERSONALIZATION_ENABLED:true}
+    top-k: 3
   pipeline:
     # ADDRF 流水线阶段顺序（可增删调序）
     stages:

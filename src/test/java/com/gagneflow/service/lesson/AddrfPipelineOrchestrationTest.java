@@ -40,8 +40,11 @@ class AddrfPipelineOrchestrationTest {
     }
 
     private AddrfPipeline newPipeline() {
+        // personalizationService: mock 返回空(默认不注入个性化, 保持原行为)
+        PersonalizationContextService pcs = mock(PersonalizationContextService.class);
+        when(pcs.getContext(any(), any(), any())).thenReturn("");
         return new AddrfPipeline(null, null, null, null, null, mockFormatTool(), mockSfl(),
-                new PipelineStageConfig(), null, null);
+                new PipelineStageConfig(), pcs, null, null);
     }
 
     private LessonPlanRequest newRequest() {
@@ -67,7 +70,7 @@ class AddrfPipelineOrchestrationTest {
                 .thenAnswer(inv -> Flux.just(text("stage output")));
 
         AddrfPipeline.AddrfResult result = pipeline.execute(
-                newRequest(), port, null, "quick", null, "", 1L);
+                newRequest(), port, null, "quick", null, "", 1L, "session-test");
 
         assertNotNull(result.analysis, "analysis should be produced");
         assertNotNull(result.design, "design should be produced");
@@ -85,7 +88,7 @@ class AddrfPipelineOrchestrationTest {
         when(port.call(any(Prompt.class))).thenReturn(text("call fallback"));
 
         AddrfPipeline.AddrfResult result = pipeline.execute(
-                newRequest(), port, null, "quick", null, "", 1L);
+                newRequest(), port, null, "quick", null, "", 1L, "session-test");
         pipeline.awaitReview(result, 10);
 
         assertNotNull(result.analysis, "call fallback should produce analysis");
@@ -100,13 +103,13 @@ class AddrfPipelineOrchestrationTest {
         when(ops.get(anyString())).thenReturn("cached analysis");
 
         AddrfPipeline pipeline = new AddrfPipeline(null, null, null, null, null, mockFormatTool(), mockSfl(),
-                new PipelineStageConfig(), redis, null);
+                new PipelineStageConfig(), mock(PersonalizationContextService.class), redis, null);
         ChatModelPort port = mock(ChatModelPort.class);
         when(port.stream(any(Prompt.class)))
                 .thenAnswer(inv -> Flux.just(text("stage output")));
 
         AddrfPipeline.AddrfResult result = pipeline.execute(
-                newRequest(), port, null, "quick", null, "", 1L);
+                newRequest(), port, null, "quick", null, "", 1L, "session-test");
         pipeline.awaitReview(result, 10);
 
         assertNotNull(result.analysis);
@@ -122,7 +125,7 @@ class AddrfPipelineOrchestrationTest {
                 .thenAnswer(inv -> Flux.just(text("quick output")));
 
         AddrfPipeline.AddrfResult result = pipeline.execute(
-                newRequest(), port, null, "quick", new ConcurrentHashMap<>(), "", 1L);
+                newRequest(), port, null, "quick", new ConcurrentHashMap<>(), "", 1L, "session-test");
         pipeline.awaitReview(result, 10);
 
         assertNotNull(result.analysis);

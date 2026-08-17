@@ -50,7 +50,7 @@ class GagneFlowIntegrationTest {
     @DisplayName("AddrfPipeline extractScore works with various formats")
     void addrfPipelineExtractScore() {
         AddrfPipeline pipeline = new AddrfPipeline(null, null, null, null, null, null, null,
-            new PipelineStageConfig(), null, null);
+            new PipelineStageConfig(), null, null, null);
 
         assertEquals(85, pipeline.extractScore("总分: 85\n内容良好"));
         assertEquals(75, pipeline.extractScore("总分 75\n评价通过"));
