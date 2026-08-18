@@ -90,6 +90,9 @@ public class ChatSessionService {
 
     private void trimByTokenBudget(ChatSession session) {
         List<Map<String, String>> history = session.getMessageHistory();
+        if (history.isEmpty()) {
+            return;
+        }
         int removeCount = 0;
         int tokens = session.getTotalTokens();
         int stuckCounter = 0;
@@ -101,6 +104,11 @@ public class ChatSessionService {
             if (est <= 0) stuckCounter++;
             else stuckCounter = 0;
             if (stuckCounter >= 10) break;
+        }
+        // 边界修复: 单条消息超长导致全部移除时, 保底保留最后一条(最新消息), 防止上下文清空失忆
+        if (removeCount >= history.size()) {
+            removeCount = history.size() - 1;
+            tokens = this.tokenCounter.estimate(history.get(removeCount).getOrDefault("content", ""));
         }
         if (removeCount > 0) {
             ArrayList<Map<String, String>> trimmed = new ArrayList<Map<String, String>>(history.subList(removeCount, history.size()));

@@ -158,4 +158,28 @@ public class ChatService {
             throw new RuntimeException("\u5bf9\u8bdd\u6458\u8981\u751f\u6210\u5931\u8d25: " + e.getMessage(), e);
         }
     }
+
+    /**
+     * \u6309\u53e5\u5b50\u8fb9\u754c\u622a\u65ad\uff1a\u5728\u6700\u5927\u957f\u5ea6\u5185\u627e\u5230\u6700\u540e\u4e00\u4e2a\u4e2d\u6587\u6807\u70b9(\u3002\uff01\uff1f\uff1b\uff1a\u3001)\u6216\u6362\u884c\u622a\u65ad\uff0c
+     * \u907f\u514d\u5c06\u5173\u952e\u8bcd/\u53e5\u5b50\u786c\u5207\u6210\u4e24\u534a\u3002\u82e5\u672a\u627e\u5230\u53ef\u7528\u8fb9\u754c\u5219\u56de\u843d\u4e3a\u786c\u622a\u65ad\u3002
+     */
+    public static String truncateAtSentenceBoundary(String text, int maxLen) {
+        if (text == null || text.length() <= maxLen) {
+            return text;
+        }
+        String cut = text.substring(0, maxLen);
+        int boundary = -1;
+        for (int i = cut.length() - 1; i >= 0; i--) {
+            char c = cut.charAt(i);
+            if (c == '\u3002' || c == '\uff01' || c == '\uff1f' || c == '\uff1b' || c == '\uff1a' || c == '\u3001' || c == '\n') {
+                boundary = i;
+                break;
+            }
+        }
+        // \u81f3\u5c11\u4fdd\u7559 30% \u7684\u6587\u672c\uff0c\u907f\u514d\u524d\u51e0\u4e2a\u5b57\u5c31\u627e\u5230\u6807\u70b9\u5bfc\u81f4\u622a\u5f97\u8fc7\u77ed
+        if (boundary >= maxLen / 3) {
+            return cut.substring(0, boundary + 1);
+        }
+        return cut;
+    }
 }

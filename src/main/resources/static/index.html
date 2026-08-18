@@ -198,6 +198,33 @@
                         </div>
                     </div>
                 </div>
+
+                <!-- 个性化上下文（2026-08-18 新增: 学情/重难点/风格偏好/作业要求, 全可选, 进 LTM 自动复用） -->
+                <div class="lp-section">
+                    <div class="lp-section-title">个性化上下文 <span class="lp-optional-hint">选填 · 会记忆并在下次生成时复用</span></div>
+                    <div class="form-grid">
+                        <div class="form-group full">
+                            <label>学情分析</label>
+                            <textarea id="lpStudentProfile" rows="2" placeholder="如：班级计算能力偏弱，基础参差不齐，喜欢小组竞赛"></textarea>
+                        </div>
+                        <div class="form-group full">
+                            <label>教学重难点</label>
+                            <textarea id="lpKeyPoints" rows="2" placeholder="如：重点=分数意义理解，难点=分数与除法的关系（留空则自动从课标推导）"></textarea>
+                        </div>
+                        <div class="form-group full">
+                            <label>教学风格偏好</label>
+                            <textarea id="lpStylePreference" rows="2" placeholder="如：讲练结合，边做题边学习，多用生活实例导入"></textarea>
+                        </div>
+                        <div class="form-group full">
+                            <label>作业/评价要求</label>
+                            <textarea id="lpAssignment" rows="2" placeholder="如：作业量控制在20分钟内，分基础题和拓展题两层"></textarea>
+                        </div>
+                        <div class="form-group full">
+                            <label>特殊要求</label>
+                            <textarea id="lpSpecial" rows="2" placeholder="其他需求，如：需要包含课堂游戏环节"></textarea>
+                        </div>
+                    </div>
+                </div>
             </div>
 
             <!-- 参考资料上传（教案生成专属） -->

@@ -165,7 +165,9 @@ public class LessonController {
                             .withTemperature(Double.valueOf(0.3))
                             .withMaxToken(Integer.valueOf(8000))
                             .withTopP(Double.valueOf(0.9)).build()).build();
-            String sessionCtx = this.buildSessionContextForAddrf(uid, sid);
+            String sessionCtx = this.buildSessionContextForAddrf(uid, sid, req);
+            // 2026-08-18: 表单个性化偏好写入 LTM(USER_EXPLICIT, 进全局集合), 下次生成自动复用
+            this.storeFormPreferencesToLtm(req, uid, sid);
             AddrfPipeline.AddrfResult result = this.addrfPipeline.execute(
                     req, new DashScopeChatModelPort(model), emitter, req.getMode(), this.copilotQueues, sessionCtx, uid, sid);
             String html = result.html != null ? result.html : "<p>生成失败</p>";
@@ -236,7 +238,8 @@ public class LessonController {
         return sb.toString();
     }
 
-    private String buildSessionContextForAddrf(Long userId, String currentSessionId) {
+    private String buildSessionContextForAddrf(Long userId, String currentSessionId,
+                                               com.gagneflow.dto.LessonPlanRequest req) {
         StringBuilder ctx = new StringBuilder();
         List<Map<String, Object>> sessions = this.chatSessionService.getUserSessions(userId);
         if (sessions != null) {
@@ -257,7 +260,41 @@ public class LessonController {
         if (ltm != null && !ltm.isEmpty()) {
             ctx.append(ltm);
         }
+        // 2026-08-18: 表单个性化字段注入(学情/重难点/风格/作业/特殊要求), 全可选
+        appendFormContext(ctx, req);
         return ctx.toString();
+    }
+
+    /** 将教案表单的个性化字段拼入 sessionContext + 存 LTM(USER_EXPLICIT) */
+    private void appendFormContext(StringBuilder ctx, com.gagneflow.dto.LessonPlanRequest req) {
+        if (req == null) return;
+        StringBuilder formCtx = new StringBuilder();
+        appendIfPresent(formCtx, "学情分析", req.getStudentProfile());
+        appendIfPresent(formCtx, "教学重难点", req.getKeyPoints());
+        appendIfPresent(formCtx, "教学风格偏好", req.getStylePreference());
+        appendIfPresent(formCtx, "作业/评价要求", req.getAssignmentRequirement());
+        appendIfPresent(formCtx, "特殊要求", req.getSpecialRequirements());
+        if (formCtx.length() > 0) {
+            ctx.append("\n[用户本次填写要求]\n").append(formCtx);
+        }
+    }
+
+    private void appendIfPresent(StringBuilder sb, String label, String value) {
+        if (value == null || value.trim().isEmpty()) return;
+        sb.append("- ").append(label).append(": ").append(value.trim()).append("\n");
+    }
+
+    /** 表单个性化字段写入 LTM: 学情/风格/作业要求属稳定画像, 存 USER_EXPLICIT 进全局 */
+    private void storeFormPreferencesToLtm(com.gagneflow.dto.LessonPlanRequest req, Long uid, String sid) {
+        if (req == null) return;
+        try {
+            this.memoryManager.storeUserPreference(uid, sid, "学生情况", req.getStudentProfile());
+            this.memoryManager.storeUserPreference(uid, sid, "教学偏好", req.getStylePreference());
+            this.memoryManager.storeUserPreference(uid, sid, "约束限制", req.getAssignmentRequirement());
+            this.memoryManager.storeUserPreference(uid, sid, "教学需求", req.getSpecialRequirements());
+        } catch (Exception e) {
+            logger.warn("[LTM] 表单偏好写入失败(不影响主流程): {}", e.getMessage());
+        }
     }
 
     @GetMapping(value = {"/lesson_plan/pdf/{sessionId}"})
@@ -331,7 +368,7 @@ public class LessonController {
             if (summary == null || summary.trim().isEmpty()) return;
             if (summary.length() > 600) {
                 logger.warn("摘要过长({}字)，截断至500字: {}", summary.length(), sessionId);
-                summary = summary.substring(0, 500);
+                summary = com.gagneflow.service.chat.ChatService.truncateAtSentenceBoundary(summary, 500);
             }
             if (this.tokenCounter != null) {
                 int origTokens = this.tokenCounter.estimate(

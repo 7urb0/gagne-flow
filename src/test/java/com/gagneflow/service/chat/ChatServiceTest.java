@@ -199,4 +199,34 @@ class ChatServiceTest {
         // null content will be appended as "null" by StringBuilder
         assertTrue(prompt.contains("用户: null") || prompt.contains("null"));
     }
+
+    // ==================================================================
+    // truncateAtSentenceBoundary (2026-08-18 新增: 摘要边界截断修复)
+    // ==================================================================
+
+    @Test
+    @DisplayName("超长文本按句子边界截断, 不切半关键词")
+    void truncate_keepsSentenceBoundary() {
+        String longText = "第一句话讲了教学目标。第二句话讲学情分析！第三句话是重难点？" + "填充内容".repeat(100);
+        String cut = ChatService.truncateAtSentenceBoundary(longText, 20);
+        assertTrue(cut.length() <= 21, "截断后长度应不超过限制+1(含标点): " + cut.length());
+        assertFalse(cut.endsWith("重"), "不应在关键词中间截断");
+    }
+
+    @Test
+    @DisplayName("文本不超过限制时原样返回")
+    void truncate_shortTextUnchanged() {
+        String shortText = "短摘要内容";
+        assertEquals(shortText, ChatService.truncateAtSentenceBoundary(shortText, 500));
+    }
+
+    @Test
+    @DisplayName("截断到句子边界(句号/分号均可)")
+    void truncate_stopsAtSentenceBoundary() {
+        String text = "教学目标明确。学生基础薄弱；需要分层教学。后续补充内容后续补充内容后续补充内容";
+        String cut = ChatService.truncateAtSentenceBoundary(text, 15);
+        // 15 字内最后一个句子边界是第 13 字后的 "；" (>= 15/3=5), 应截到 "...学生基础薄弱；"
+        assertTrue(cut.endsWith("。") || cut.endsWith("；"), "应以句子标点结尾: " + cut);
+        assertFalse(cut.endsWith("需"), "不应在句子中间截断");
+    }
 }

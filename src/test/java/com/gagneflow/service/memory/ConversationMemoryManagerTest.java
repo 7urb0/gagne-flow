@@ -15,11 +15,12 @@ import static org.mockito.Mockito.*;
 class ConversationMemoryManagerTest {
 
     private ConversationMemoryManager manager;
+    private LongTermMemoryService ltmService;
 
     @BeforeEach
     void setUp() {
         ChatSessionService chatSessionService = mock(ChatSessionService.class);
-        LongTermMemoryService ltmService = mock(LongTermMemoryService.class);
+        ltmService = mock(LongTermMemoryService.class);
         manager = new ConversationMemoryManager(chatSessionService, ltmService);
     }
 
@@ -140,6 +141,30 @@ class ConversationMemoryManagerTest {
             return (List<LongTermMemoryService.MemoryFact>) method.invoke(manager, summary);
         } catch (Exception e) {
             throw new RuntimeException(e);
+        }
+    }
+
+    @Nested
+    @DisplayName("storeUserPreference — 表单偏好写入 LTM")
+    class StoreUserPreferenceTests {
+
+        @Test
+        @DisplayName("非空偏好存为 USER_EXPLICIT 事实")
+        void nonEmptyPreference_storedAsUserExplicit() {
+            manager.storeUserPreference(1L, "lesson_abc", "教学偏好", "讲练结合，边做题边学习");
+            verify(ltmService).storeFacts(eq(1L), eq("lesson_abc"), argThat(facts ->
+                    facts.size() == 1
+                            && "讲练结合，边做题边学习".equals(facts.get(0).getFact())
+                            && "教学偏好".equals(facts.get(0).getFactType())
+                            && LongTermMemoryService.SOURCE_USER.equals(facts.get(0).getSourcePhase())));
+        }
+
+        @Test
+        @DisplayName("空/空白偏好不写入 LTM")
+        void blankPreference_notStored() {
+            manager.storeUserPreference(1L, "lesson_abc", "教学偏好", "   ");
+            manager.storeUserPreference(1L, "lesson_abc", "教学偏好", null);
+            verify(ltmService, never()).storeFacts(any(), any(), any());
         }
     }
 }

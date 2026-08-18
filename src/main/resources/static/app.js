@@ -90,6 +90,11 @@ class GagneFlowApp {
         this.lpHours = document.getElementById('lpHours');
         this.lpGoals = document.getElementById('lpGoals');
         this.lpMode = document.getElementById('lpMode');
+        this.lpStudentProfile = document.getElementById('lpStudentProfile');
+        this.lpKeyPoints = document.getElementById('lpKeyPoints');
+        this.lpStylePreference = document.getElementById('lpStylePreference');
+        this.lpAssignment = document.getElementById('lpAssignment');
+        this.lpSpecial = document.getElementById('lpSpecial');
         this.lpToggleUpload = document.getElementById('lpToggleUpload');
         this.btnGenerate = document.getElementById('btnGenerate');
         this.lessonResult = document.getElementById('lessonResult');
@@ -888,6 +893,13 @@ class GagneFlowApp {
             mode: this.lpMode.value,
             Id: this.sessionId, Question: this.lpStage.value + this.lpGrade.value + this.lpSubject.value
         };
+
+        // 个性化上下文字段（2026-08-18 新增, 全可选）
+        if (this.lpStudentProfile) params.studentProfile = this.lpStudentProfile.value.trim();
+        if (this.lpKeyPoints) params.keyPoints = this.lpKeyPoints.value.trim();
+        if (this.lpStylePreference) params.stylePreference = this.lpStylePreference.value.trim();
+        if (this.lpAssignment) params.assignmentRequirement = this.lpAssignment.value.trim();
+        if (this.lpSpecial) params.specialRequirements = this.lpSpecial.value.trim();
 
         // Copilot 模式：不弹窗，收起表单，直接展示内容区
         if (params.mode === 'copilot') {

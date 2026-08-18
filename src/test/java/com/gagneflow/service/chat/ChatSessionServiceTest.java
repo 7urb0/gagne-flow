@@ -405,6 +405,35 @@ class ChatSessionServiceTest {
             ChatSession session = new ChatSession(SESSION_ID);
             assertDoesNotThrow(() -> service.saveRaw(USER_ID, SESSION_ID, session));
         }
+
+        @Test
+        @DisplayName("单条超长消息触发裁剪时不导致历史清空(边界修复)")
+        void oversizedMessageKeepsLatestOnTrim() {
+            // 两条 2250 token 的消息(1500 中文字符 x 1.5) => totalTokens 4500 > 2000 预算
+            String longText = "长".repeat(1500);
+
+            // mock 乐观锁回调内的 ops, 让 withOptimisticLock 真实执行 addMessage + trim
+            org.springframework.data.redis.core.RedisOperations<String, String> ops =
+                    mock(org.springframework.data.redis.core.RedisOperations.class);
+            org.springframework.data.redis.core.ValueOperations<String, String> opsValue =
+                    mock(org.springframework.data.redis.core.ValueOperations.class);
+            when(ops.opsForValue()).thenReturn(opsValue);
+            when(opsValue.get(anyString())).thenReturn(null);   // 会话不存在 -> 新建
+            when(ops.exec()).thenAnswer(inv -> java.util.Collections.emptyList()); // 乐观锁成功(exec 返回 List, 非 null 即成功)
+            when(redisTemplate.execute(any(SessionCallback.class))).thenAnswer(inv -> {
+                SessionCallback<?> cb = inv.getArgument(0);
+                return cb.execute(ops);
+            });
+
+            service.addMessage(USER_ID, SESSION_ID, longText, longText);
+
+            // 捕获写入 Redis 的会话 JSON, 验证历史未被清空(修复前 subList(size,size) 返回空列表)
+            ArgumentCaptor<String> jsonCaptor = ArgumentCaptor.forClass(String.class);
+            verify(opsValue).set(anyString(), jsonCaptor.capture(), any(Duration.class));
+            String savedJson = jsonCaptor.getValue();
+            assertNotNull(savedJson);
+            assertFalse(savedJson.contains("\"messageHistory\":[]"), "单条超长消息不应清空全部历史");
+        }
     }
 
     // ==================================================================

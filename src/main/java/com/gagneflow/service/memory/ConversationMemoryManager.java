@@ -79,6 +79,21 @@ public class ConversationMemoryManager {
         this.longTermMemoryService.storeFacts(userId, sessionId, facts);
     }
 
+    /**
+     * 存储用户通过教案表单显式填写的个性化偏好(2026-08-18 新增)。
+     * 来源标记 USER_EXPLICIT(权重 1.0), 会进入跨会话全局集合。
+     */
+    public void storeUserPreference(Long userId, String sessionId, String factType, String text) {
+        if (text == null || text.trim().isEmpty()) {
+            return;
+        }
+        LongTermMemoryService.MemoryFact fact = new LongTermMemoryService.MemoryFact();
+        fact.setFact(text.trim());
+        fact.setFactType(factType);
+        fact.setSourcePhase(LongTermMemoryService.SOURCE_USER);
+        this.longTermMemoryService.storeFacts(userId, sessionId, List.of(fact));
+    }
+
     public ConversationContext buildFullContext(Long userId, String sessionId,
                                                   String currentQuery, int ltmTopK) {
         ChatSession session = this.chatSessionService.getRaw(userId, sessionId);

@@ -25,6 +25,18 @@ public class LessonPlanRequest {
     private String mode = "quick";
     private List<String> uploadedFileNames;
 
+    // ---- 2026-08-18 新增: 个性化上下文字段(全可选, 不破坏现有调用) ----
+    /** 学情分析: 班级基础/薄弱点/特点, 进 analysis 学情分析 + LTM */
+    private String studentProfile;
+    /** 教学重难点: 用户指定的重点难点, 空则模型从课标推导 */
+    private String keyPoints;
+    /** 教学风格偏好: 启发式/探究式/讲练结合/游戏化等, 进 LTM 贯穿全流程 */
+    private String stylePreference;
+    /** 作业/评价要求: 作业量、是否分层等 */
+    private String assignmentRequirement;
+    /** 特殊要求: 自由文本兜底 */
+    private String specialRequirements;
+
     public String getStage() {
         return this.stage;
     }
@@ -80,4 +92,19 @@ public class LessonPlanRequest {
     public void setUploadedFileNames(List<String> names) {
         this.uploadedFileNames = names;
     }
+
+    public String getStudentProfile() { return studentProfile; }
+    public void setStudentProfile(String studentProfile) { this.studentProfile = studentProfile; }
+
+    public String getKeyPoints() { return keyPoints; }
+    public void setKeyPoints(String keyPoints) { this.keyPoints = keyPoints; }
+
+    public String getStylePreference() { return stylePreference; }
+    public void setStylePreference(String stylePreference) { this.stylePreference = stylePreference; }
+
+    public String getAssignmentRequirement() { return assignmentRequirement; }
+    public void setAssignmentRequirement(String assignmentRequirement) { this.assignmentRequirement = assignmentRequirement; }
+
+    public String getSpecialRequirements() { return specialRequirements; }
+    public void setSpecialRequirements(String specialRequirements) { this.specialRequirements = specialRequirements; }
 }

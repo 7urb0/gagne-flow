@@ -426,6 +426,10 @@ a { text-decoration: none; color: inherit; }
     text-transform: uppercase; letter-spacing: 0.5px; margin-bottom: var(--space-3);
     display: flex; align-items: center; gap: var(--space-2);
 }
+.lp-optional-hint {
+    font-size: var(--font-2xs); font-weight: 400; color: var(--text-muted);
+    text-transform: none; letter-spacing: 0; opacity: 0.75;
+}
 .btn-toggle {
     background: none; border: none; cursor: pointer; color: var(--text-muted);
     padding: 0; display: flex; align-items: center; transition: var(--ease);

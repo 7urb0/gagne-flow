@@ -195,7 +195,7 @@ public class ChatController {
             if (summary == null || summary.trim().isEmpty()) return;
             if (summary.length() > 600) {
                 logger.warn("摘要过长({}字)，截断至500字: {}", summary.length(), sessionId);
-                summary = summary.substring(0, 500);
+                summary = com.gagneflow.service.chat.ChatService.truncateAtSentenceBoundary(summary, 500);
             }
             if (this.tokenCounter != null) {
                 int origTokens = this.tokenCounter.estimate(
