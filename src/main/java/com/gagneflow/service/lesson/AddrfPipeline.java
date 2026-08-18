@@ -75,6 +75,13 @@ public class AddrfPipeline {
     private boolean analysisClarifyEnabled;
     @org.springframework.beans.factory.annotation.Value("${gagneflow.addrf.max-clarify-questions:3}")
     private int maxClarifyQuestions;
+    // 2026-08-18: 进行中的流水线结果注册表(sessionId -> result), 供用户评分接口写入 userScore
+    private final ConcurrentHashMap<String, AddrfResult> activeResults = new ConcurrentHashMap<>();
+
+    /** 供 LessonController 用户评分接口通过 sessionId 定位 result */
+    public AddrfResult getActiveResult(String sessionId) {
+        return sessionId == null ? null : this.activeResults.get(sessionId);
+    }
 
     @Autowired
     public AddrfPipeline(PromptLoader promptLoader, PromptRegistry promptRegistry,
@@ -132,6 +139,10 @@ public class AddrfPipeline {
             CompletableFuture<Void> devFuture;
             block17: {
                 result = new AddrfResult();
+                // 2026-08-18: 注册进行中的 result, 供用户评分接口写入(execute 返回时移除)
+                if (sessionId != null) {
+                    this.activeResults.put(sessionId, result);
+                }
                 k12Ctx = this.loadK12Context(request);
                 String initialInput = this.buildInitialInput(request, k12Ctx, sessionContext);
                 logger.info("[ADDRF] \u9636\u6bb51: Analysis \u5f00\u59cb");
@@ -246,6 +257,12 @@ public class AddrfPipeline {
                 logger.info("[ADDRF] Review \u540e\u53f0\u5f00\u59cb");
                 this.asyncReview(result, chatModel, enhancedDevPrompt, emitter, finalK12, finalSubject, userId, sessionId);
                 logger.info("[ADDRF] Review \u540e\u53f0\u5b8c\u6210, \u8bc4\u5206: {}", (Object)result.score);
+                // 2026-08-18: 用户低分一票否决(1-2星) -> 无论 LLM 分, 标记人工审核
+                if (result.userScore >= 1 && result.userScore <= 2) {
+                    logger.warn("[ADDRF-HITL] 用户低分一票否决: userScore={}, llmScore={}, uid={}",
+                            result.userScore, result.score, userId);
+                    result.needsHumanReview = true;
+                }
                 // HITL 检查: 判断是否需要人工审核
                 if (shouldRequestHumanReview(result, request.getSubject(), userId)) {
                     logger.warn("[ADDRF-HITL] \u89e6\u53d1\u4eba\u5de5\u5ba1\u6838: subject={}, score={}, uid={}",
@@ -264,6 +281,10 @@ public class AddrfPipeline {
         } else {
             result.review = "[\u7cfb\u7edf\u63d0\u793a: \u6559\u6848\u4e3b\u4f53\u4e0d\u5b8c\u6574\uff0c\u8df3\u8fc7\u8bc4\u4f30]";
             this.emitStageComplete(emitter, "stage:review", result.review);
+                // 2026-08-18: Review 完成, 移除注册表(用户评分窗口关闭)
+                if (sessionId != null) {
+                    this.activeResults.remove(sessionId);
+                }
         }
         return result;
     }
@@ -768,6 +789,8 @@ public class AddrfPipeline {
         public volatile int score;
         // volatile: HITL标志位（asyncReview线程设置，LessonController主线程读取）
         public volatile boolean needsHumanReview = false;
+        // 2026-08-18: 用户评分(1-5星, 0=未评分)。用户评分线程写入, asyncReview线程读取
+        public volatile int userScore = 0;
 
         public Map<String, String> getStageOutputs() {
             return Map.of("analysis", this.analysis != null ? this.analysis : "", "design", this.design != null ? this.design : "", "development", this.development != null ? this.development : "", "review", this.review != null ? this.review : "");

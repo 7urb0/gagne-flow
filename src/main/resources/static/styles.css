@@ -586,6 +586,32 @@ a { text-decoration: none; color: inherit; }
 .score-row .score-bar div { height: 100%; background: var(--primary); border-radius: 3px; transition: width 0.5s ease-out; }
 .score-row span:last-child { font-size: var(--font-xs); font-weight: 600; width: 32px; text-align: right; }
 
+/* 2026-08-18: 用户评分面板(1-5星 + 可选反馈) */
+.user-score-panel {
+    background: var(--primary-light); border: 1px dashed var(--primary);
+    border-radius: var(--radius-lg); padding: var(--space-3) var(--space-4);
+    margin-bottom: var(--space-3); animation: msgIn 0.25s ease-out;
+}
+.us-header { font-size: var(--font-sm); font-weight: 600; color: var(--text); margin-bottom: var(--space-2); }
+.us-hint { font-weight: 400; font-size: var(--font-2xs); color: var(--text-muted); }
+.us-stars { display: flex; gap: var(--space-1); margin-bottom: var(--space-2); }
+.us-star {
+    background: none; border: none; font-size: 24px; line-height: 1; cursor: pointer;
+    color: var(--text-muted); transition: transform 0.15s ease;
+}
+.us-star:hover { transform: scale(1.2); }
+.us-feedback-row { display: flex; gap: var(--space-2); align-items: center; }
+.us-feedback {
+    flex: 1; padding: var(--space-1) var(--space-2); border: 1px solid var(--border);
+    border-radius: var(--radius-md); font-size: var(--font-xs); background: var(--background);
+}
+.us-submit {
+    padding: var(--space-1) var(--space-3); border: 1px solid var(--primary);
+    border-radius: var(--radius-md); background: var(--primary); color: #fff;
+    font-size: var(--font-xs); cursor: pointer;
+}
+.us-submit:disabled { opacity: 0.5; cursor: not-allowed; }
+
 /* ============================================================
    Progress Modal (教案生成进度弹窗)
    ============================================================ */

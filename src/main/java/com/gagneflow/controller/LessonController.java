@@ -346,6 +346,37 @@ public class LessonController {
     }
 
     /**
+     * 2026-08-18: 用户评分(1-5星)。Format 完成后推送评分 UI, 用户在 Review 完成前打分。
+     * 用户低分(1-2星)一票否决 -> 无论 LLM 评分, 标记人工审核。
+     */
+    @PostMapping(value = {"/lesson_plan/score"})
+    public ResponseEntity<?> lessonPlanScore(@RequestBody Map<String, String> body) {
+        String sessionId = body.get("sessionId");
+        String scoreStr = body.get("score");
+        if (sessionId == null || scoreStr == null) {
+            return ResponseEntity.badRequest().body(Map.of("error", "sessionId and score required"));
+        }
+        int userScore;
+        try {
+            userScore = Integer.parseInt(scoreStr.trim());
+        } catch (NumberFormatException e) {
+            return ResponseEntity.badRequest().body(Map.of("error", "score must be integer 1-5"));
+        }
+        if (userScore < 1 || userScore > 5) {
+            return ResponseEntity.badRequest().body(Map.of("error", "score must be 1-5"));
+        }
+        AddrfPipeline.AddrfResult result = this.addrfPipeline.getActiveResult(sessionId);
+        if (result == null) {
+            return ResponseEntity.status(404).body(Map.of("error", "active lesson plan not found or review already finished"));
+        }
+        result.userScore = userScore;
+        String feedback = body.getOrDefault("feedback", "");
+        logger.info("[ADDRF] 用户评分: sessionId={}, score={}, feedback={}",
+                sessionId, userScore, feedback.isEmpty() ? "(无)" : feedback);
+        return ResponseEntity.ok(Map.of("ok", true, "userScore", userScore));
+    }
+
+    /**
      * P1修复: 摘要替换一致性 — 先删 MySQL 再更新 Redis，避免状态分裂
      */
     private void tryTriggerSummary(Long userId, String sessionId) {

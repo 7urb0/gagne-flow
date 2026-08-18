@@ -1008,9 +1008,12 @@ class GagneFlowApp {
                                     // Review 推送的更新版：静默刷新已打开的工作台
                                     if (this.workbench.style.display === 'flex') this._renderWorkbench();
                                 } else {
-                                    // 初次 Format 完成：立即展示"查看教案"按钮
+                                    // 初次 Format 完成：立即展示"查看教案"按钮 + 评分 UI
                                     this._formatReceived = true;
-                                    if (!this._reviewReceived) this.completeProgressModal(true);
+                                    if (!this._reviewReceived) {
+                                        this.completeProgressModal(true);
+                                        this.showUserScoreUI();
+                                    }
                                 }
                             }
                             else if (stage === 'review') {
@@ -1140,6 +1143,54 @@ class GagneFlowApp {
     }
 
     // ===== 质量评分 =====
+    /**
+     * 2026-08-18: 用户评分 UI(1-5星 + 可选反馈)。Format 完成后展示, 不阻塞 LLM Review。
+     * 提交到 /lesson_plan/score; 用户低分(1-2星)一票否决。
+     */
+    showUserScoreUI() {
+        if (!this.sessionId || this._userScoreShown) return;
+        this._userScoreShown = true;
+        const panel = document.createElement('div'); panel.className = 'user-score-panel';
+        panel.innerHTML = `
+            <div class="us-header">这份教案符合你的预期吗？<span class="us-hint">（质量评估中，提交可参与最终判定）</span></div>
+            <div class="us-stars">
+                ${[1,2,3,4,5].map(i => `<button class="us-star" data-v="${i}" title="${i}星">★</button>`).join('')}
+            </div>
+            <div class="us-feedback-row">
+                <input type="text" class="us-feedback" placeholder="想改进哪里？（可选）" maxlength="200">
+                <button class="us-submit" disabled>提交评分</button>
+            </div>
+            <div class="us-done" style="display:none;color:var(--text-muted);font-size:12px;">已收到，感谢反馈</div>`;
+        const submitBtn = panel.querySelector('.us-submit');
+        let selected = 0;
+        panel.querySelectorAll('.us-star').forEach(btn => {
+            btn.addEventListener('click', () => {
+                selected = parseInt(btn.dataset.v);
+                panel.querySelectorAll('.us-star').forEach(b =>
+                    b.style.color = parseInt(b.dataset.v) <= selected ? '#e2a63a' : 'var(--text-muted)');
+                submitBtn.disabled = false;
+            });
+        });
+        submitBtn.addEventListener('click', async () => {
+            if (!selected) return;
+            const feedback = panel.querySelector('.us-feedback').value.trim();
+            try {
+                await this.apiFetch(this.apiBase + '/lesson_plan/score', {
+                    method: 'POST', headers: { 'Content-Type': 'application/json' },
+                    body: JSON.stringify({ sessionId: this.sessionId, score: selected, feedback })
+                });
+                panel.querySelector('.us-header').style.display = 'none';
+                panel.querySelector('.us-stars').style.display = 'none';
+                panel.querySelector('.us-feedback-row').style.display = 'none';
+                panel.querySelector('.us-done').style.display = 'block';
+            } catch (e) {
+                this.showToast('评分提交失败', 'error');
+            }
+        });
+        this.lessonMessages.appendChild(panel);
+        this.lessonMessages.scrollTop = this.lessonMessages.scrollHeight;
+    }
+
     showQualityScore(reviewText) {
         const scores = this.parseScore(reviewText);
         if (!scores) return;

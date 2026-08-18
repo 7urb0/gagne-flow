@@ -88,4 +88,46 @@ class LessonControllerTest {
         assertEquals(200, resp.getStatusCodeValue());
         assertEquals("revise:加强互动环节", q.poll());
     }
+
+    // ============================================================
+    // 用户评分接口 (2026-08-18 人机协同 Review)
+    // ============================================================
+
+    @Test
+    void lessonPlanScore_missingFields_badRequest() {
+        LessonController c = newController();
+        assertEquals(400, c.lessonPlanScore(Map.of("sessionId", "s1")).getStatusCodeValue());
+        assertEquals(400, c.lessonPlanScore(Map.of("score", "3")).getStatusCodeValue());
+    }
+
+    @Test
+    void lessonPlanScore_invalidScore_badRequest() {
+        LessonController c = newController();
+        assertEquals(400, c.lessonPlanScore(Map.of("sessionId", "s1", "score", "0")).getStatusCodeValue());
+        assertEquals(400, c.lessonPlanScore(Map.of("sessionId", "s1", "score", "6")).getStatusCodeValue());
+        assertEquals(400, c.lessonPlanScore(Map.of("sessionId", "s1", "score", "abc")).getStatusCodeValue());
+    }
+
+    @Test
+    void lessonPlanScore_noActiveResult_404() {
+        LessonController c = newController();
+        com.gagneflow.service.lesson.AddrfPipeline pipeline = mock(com.gagneflow.service.lesson.AddrfPipeline.class);
+        when(pipeline.getActiveResult("s1")).thenReturn(null);
+        ReflectionTestUtils.setField(c, "addrfPipeline", pipeline);
+        assertEquals(404, c.lessonPlanScore(Map.of("sessionId", "s1", "score", "3")).getStatusCodeValue());
+    }
+
+    @Test
+    void lessonPlanScore_validScore_writesToResult() {
+        LessonController c = newController();
+        com.gagneflow.service.lesson.AddrfPipeline pipeline = mock(com.gagneflow.service.lesson.AddrfPipeline.class);
+        com.gagneflow.service.lesson.AddrfPipeline.AddrfResult result =
+                new com.gagneflow.service.lesson.AddrfPipeline.AddrfResult();
+        when(pipeline.getActiveResult("s1")).thenReturn(result);
+        ReflectionTestUtils.setField(c, "addrfPipeline", pipeline);
+
+        ResponseEntity<?> resp = c.lessonPlanScore(Map.of("sessionId", "s1", "score", "2", "feedback", "重难点不清"));
+        assertEquals(200, resp.getStatusCodeValue());
+        assertEquals(2, result.userScore);
+    }
 }
