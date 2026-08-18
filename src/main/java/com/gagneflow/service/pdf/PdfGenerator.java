@@ -17,12 +17,16 @@ public class PdfGenerator {
     private String configuredFontPath;
 
     public byte[] htmlToPdf(String html) {
+        // 2026-08-18 修复: flying-saucer 要求 XHTML 严格闭合, 教案 HTML 的
+        // <meta charset=...> / <br> 等 HTML5 自闭合写法会导致 SAXParseException。
+        // 入口做轻量规范化: 无属性自闭合标签补 /, 带属性且未闭合的补 /。
+        String xhtml = normalizeToXhtml(html);
         byte[] byArray;
         ByteArrayOutputStream baos = new ByteArrayOutputStream();
         try {
             ITextRenderer renderer = new ITextRenderer();
             this.addChineseFonts(renderer);
-            renderer.setDocumentFromString(html);
+            renderer.setDocumentFromString(xhtml);
             renderer.layout();
             renderer.createPDF((OutputStream)baos);
             byte[] pdf = baos.toByteArray();
@@ -46,6 +50,28 @@ public class PdfGenerator {
         }
         try { baos.close(); } catch (IOException e) {}
         return byArray;
+    }
+
+    /**
+     * HTML5 -> XHTML 轻量规范化: flying-saucer 的 XML 解析要求严格闭合。
+     * 处理 <meta ...> / <br> / <hr> / <img> / <link> / <input> 等自闭合标签:
+     * 无属性 -> 补 "/", 带属性且以 ">" 结尾 -> 补 "/"。
+     * 不做完整 HTML 解析, 只做正则替换, 失败时原样返回(保底)。
+     */
+    static String normalizeToXhtml(String html) {
+        if (html == null || html.isEmpty()) {
+            return html;
+        }
+        try {
+            // 1. 无属性的自闭合标签: <br> / <hr> (可能带空格: <br >)
+            String result = html.replaceAll("(?i)<(br|hr)(\\s+[^>]*)?>", "<$1$2/>");
+            // 2. 带属性且未自闭合的空元素: <meta charset="UTF-8"> -> <meta charset="UTF-8" />
+            result = result.replaceAll("(?i)<(meta|link|img|input)([^>]*?[^/])>", "<$1$2 />");
+            return result;
+        } catch (Exception e) {
+            logger.warn("HTML 规范化失败, 原样返回: {}", e.getMessage());
+            return html;
+        }
     }
 
     private void addChineseFonts(ITextRenderer renderer) {

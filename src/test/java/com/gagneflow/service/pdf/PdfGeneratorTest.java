@@ -78,4 +78,41 @@ class PdfGeneratorTest {
             }
         }
     }
+
+    // ============================================================
+    // normalizeToXhtml (2026-08-18 修复: flying-saucer 需要严格 XHTML)
+    // ============================================================
+
+    @Nested
+    @DisplayName("normalizeToXhtml 规范化")
+    class NormalizeToXhtmlTests {
+
+        @Test
+        @DisplayName("meta 带属性自闭合标签补 /")
+        void metaTag_getsSelfClosed() {
+            String out = PdfGenerator.normalizeToXhtml("<head><meta charset=\"UTF-8\"></head>");
+            assertTrue(out.contains("<meta charset=\"UTF-8\" />"), "meta 应补自闭合: " + out);
+        }
+
+        @Test
+        @DisplayName("br/hr 无属性自闭合标签补 /")
+        void voidTags_getSelfClosed() {
+            String out = PdfGenerator.normalizeToXhtml("<p>第一行<br>第二行<hr>分割</p>");
+            assertTrue(out.contains("<br/>") && out.contains("<hr/>"), "br/hr 应补自闭合: " + out);
+        }
+
+        @Test
+        @DisplayName("已自闭合标签不重复处理")
+        void alreadySelfClosed_unchanged() {
+            String out = PdfGenerator.normalizeToXhtml("<img src=\"a.png\" />");
+            assertEquals("<img src=\"a.png\" />", out);
+        }
+
+        @Test
+        @DisplayName("null/空输入原样返回")
+        void nullOrEmpty_returnsAsIs() {
+            assertNull(PdfGenerator.normalizeToXhtml(null));
+            assertEquals("", PdfGenerator.normalizeToXhtml(""));
+        }
+    }
 }
