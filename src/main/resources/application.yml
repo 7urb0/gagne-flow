@@ -42,6 +42,10 @@ gagneflow:
   personalization:
     enabled: ${PERSONALIZATION_ENABLED:true}
     top-k: 3
+  addrf:
+    # Analysis 前置意图理解 + 澄清问题(2026-08-18 一期): 建议式推送不阻塞
+    analysis-clarify-enabled: ${ADDRF_CLARIFY_ENABLED:true}
+    max-clarify-questions: 3
   pipeline:
     # ADDRF 流水线阶段顺序（可增删调序）
     stages:

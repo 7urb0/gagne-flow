@@ -70,6 +70,12 @@ public class AddrfPipeline {
     private static final Pattern DEDUP_SECTION_PATTERN = Pattern.compile("(?m)(?=^\\*\\*[^*]+\\*\\*)");
     private static final Pattern DEDUP_TITLE_PATTERN = Pattern.compile("\\*\\*([^*]+)\\*\\*");
 
+    // 2026-08-18: Analysis 意图理解 + 澄清(一期)
+    @org.springframework.beans.factory.annotation.Value("${gagneflow.addrf.analysis-clarify-enabled:true}")
+    private boolean analysisClarifyEnabled;
+    @org.springframework.beans.factory.annotation.Value("${gagneflow.addrf.max-clarify-questions:3}")
+    private int maxClarifyQuestions;
+
     @Autowired
     public AddrfPipeline(PromptLoader promptLoader, PromptRegistry promptRegistry,
                          PromptExperiment promptExperiment, PromptMetricsCollector promptMetrics,
@@ -137,7 +143,9 @@ public class AddrfPipeline {
                     result.analysis = cachedAnalysis;
                 } else {
                     String analysisPrompt = this.loadPrompt("addrf_analysis", userId);
-                    result.analysis = this.callStageWithRevise(chatModel, analysisPrompt, initialInput, emitter, "analysis", mode, copilotQueues, 60, request.getSubject());
+                    // 2026-08-18: Analysis 前置意图理解 + 澄清问题(一期, 建议式不阻塞)
+                    String clarifiedInput = this.runAnalysisClarify(chatModel, initialInput, emitter, userId, request.getSubject());
+                    result.analysis = this.callStageWithRevise(chatModel, analysisPrompt, clarifiedInput, emitter, "analysis", mode, copilotQueues, 60, request.getSubject());
                     if (TERMINATED.equals(result.analysis)) {
                         result.analysis = "[\u7528\u6237\u7ec8\u6b62]";
                         return result;
@@ -274,6 +282,73 @@ public class AddrfPipeline {
                 logger.warn("[ADDRF] Review background task failed: {}", e.getMessage());
             }
         }
+    }
+
+    /**
+     * Analysis 前置意图理解(2026-08-18 一期):
+     * 调用意图理解 prompt 生成 [意图摘要] + [澄清问题], 通过独立 SSE 事件建议式推送(不阻塞)。
+     * 返回合并了意图摘要的输入(供正式 Analysis 使用); 任何异常回退为原始输入。
+     */
+    private String runAnalysisClarify(ChatModelPort chatModel, String userInput, SseEmitter emitter,
+                                      Long userId, String subject) {
+        if (!this.analysisClarifyEnabled) {
+            return userInput;
+        }
+        String intentPrompt;
+        try {
+            intentPrompt = this.loadPrompt("addrf_analysis_intent", userId);
+        } catch (Exception e) {
+            logger.debug("[ADDRF] 意图理解 prompt 不可用, 跳过澄清: {}", e.getMessage());
+            return userInput;
+        }
+        if (intentPrompt == null || intentPrompt.isBlank()) {
+            return userInput;
+        }
+        try {
+            String intentOutput = this.callAgent(chatModel, intentPrompt, userInput, emitter, "analysis_intent", "quick", 60, subject);
+            if (intentOutput == null || intentOutput.isBlank()) {
+                return userInput;
+            }
+            String intentSummary = extractIntentSection(intentOutput, "意图摘要");
+            String questions = extractIntentSection(intentOutput, "澄清问题");
+            // 建议式推送: 有具体澄清问题才推(不阻塞, 用户可答可不答)
+            if (questions != null && !questions.isBlank()
+                    && !questions.contains("无需澄清") && emitter != null) {
+                try {
+                    emitter.send(SseEmitter.event().name("message")
+                            .data(java.util.Map.of("type", "analysis_clarify", "questions", questions)));
+                    logger.info("[ADDRF] Analysis 澄清问题已推送: {}", questions.length());
+                } catch (Exception e) {
+                    logger.trace("[ADDRF] 澄清问题推送失败 (emitter 可能已关闭): {}", e.getMessage());
+                }
+            }
+            // 意图摘要合并进输入, 供正式 Analysis 参考
+            if (intentSummary != null && !intentSummary.isBlank()) {
+                return userInput + "\n\n[意图理解摘要(仅供分析参考)]: " + intentSummary;
+            }
+            return userInput;
+        } catch (Exception e) {
+            logger.warn("[ADDRF] 意图理解失败, 回退原始输入: {}", e.getMessage());
+            return userInput;
+        }
+    }
+
+    /** 从意图理解输出中提取 **标签** 段落 */
+    private String extractIntentSection(String output, String label) {
+        if (output == null) return null;
+        int start = output.indexOf("**" + label + "**");
+        if (start < 0) {
+            start = output.indexOf(label + ":");
+            if (start < 0) return null;
+        } else {
+            start = output.indexOf('\n', start);
+        }
+        // 找下一个 **标签** 或结尾
+        int end = output.indexOf("\n**", start > 0 ? start : 0);
+        if (end < 0) end = output.length();
+        String section = output.substring(start < 0 ? 0 : start + 1, end).trim();
+        // 去掉行首的 - 或数字序号
+        return section.replaceAll("(?m)^\\s*[-\\d.、]+\\s*", "").trim();
     }
 
     private String callStageWithRevise(ChatModelPort chatModel, String systemPrompt, String userInput, SseEmitter emitter, String stage, String mode, ConcurrentHashMap<String, BlockingQueue<String>> copilotQueues, int timeoutSec, String subject) {

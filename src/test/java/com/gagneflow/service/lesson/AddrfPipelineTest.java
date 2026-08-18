@@ -279,6 +279,40 @@ class AddrfPipelineTest {
     }
 
     // ============================================================
+    // Analysis 意图理解解析 (2026-08-18)
+    // ============================================================
+
+    @Test
+    @DisplayName("extractIntentSection 提取意图摘要段落")
+    void extractIntentSection_returnsIntentSummary() throws Exception {
+        String output = "**意图摘要**:\n用户想要一节小学三年级数学课，重点是分数认识。\n\n**信息缺口**:\n- 学情未知\n\n**澄清问题**:\n- 学生计算基础如何？";
+        String summary = invokeExtractIntentSection(output, "意图摘要");
+        assertTrue(summary.contains("分数认识"), "应包含意图内容: " + summary);
+    }
+
+    @Test
+    @DisplayName("extractIntentSection 提取澄清问题并去掉序号")
+    void extractIntentSection_returnsCleanQuestions() throws Exception {
+        String output = "**意图摘要**:\n测试摘要\n\n**信息缺口**:\n- 学情\n\n**澄清问题**:\n- 学生计算基础如何？\n- 是否需要分层作业？";
+        String questions = invokeExtractIntentSection(output, "澄清问题");
+        assertTrue(questions.contains("学生计算基础"), "应包含第一个问题: " + questions);
+        assertTrue(questions.contains("分层作业"), "应包含第二个问题: " + questions);
+        assertFalse(questions.contains("信息缺口"), "不应混入上一段内容");
+    }
+
+    @Test
+    @DisplayName("extractIntentSection 无标签时返回 null")
+    void extractIntentSection_missingLabel_returnsNull() throws Exception {
+        assertNull(invokeExtractIntentSection("**意图摘要**:\n只有摘要", "信息缺口"));
+    }
+
+    private String invokeExtractIntentSection(String output, String label) throws Exception {
+        var method = AddrfPipeline.class.getDeclaredMethod("extractIntentSection", String.class, String.class);
+        method.setAccessible(true);
+        return (String) method.invoke(defaultPipeline, output, label);
+    }
+
+    // ============================================================
     // shouldRequestHumanReview tests
     // ============================================================
 

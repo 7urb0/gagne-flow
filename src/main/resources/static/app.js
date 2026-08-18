@@ -1020,6 +1020,14 @@ class GagneFlowApp {
                             }
                         }
                     }
+                    else if (m.type === 'analysis_clarify') {
+                        // Analysis 意图澄清(2026-08-18): 建议式展示问题, 不阻塞生成
+                        const qs = (m.questions || '').replace(/^[-*]\s*/gm, '· ');
+                        this.addLessonMessage('assistant',
+                            `### 🔍 生成前小确认（可选，不回答也能继续）\n\n` +
+                            qs.split('\n').filter(l => l.trim()).map(l => `> ${l.trim()}`).join('\n\n') +
+                            `\n\n_你可以直接在对话中补充这些信息，或跳过继续生成。_`);
+                    }
                     else if (m.type === 'stage_await') {
                         // Copilot 分步确认：展示阶段内容 + 等待用户确认（三按钮：继续/修改/停止）
                         const stageName = {analysis:'教学分析',design:'教学设计',development:'教学过程',review:'质量评估'}[m.stage] || m.stage;
