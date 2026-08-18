@@ -17,6 +17,7 @@ import java.util.concurrent.atomic.AtomicBoolean;
 import com.alibaba.cloud.ai.dashscope.api.DashScopeApi;
 import com.alibaba.cloud.ai.dashscope.chat.DashScopeChatModel;
 import com.alibaba.cloud.ai.dashscope.chat.DashScopeChatOptions;
+import com.gagneflow.agent.tool.LessonPlanTools;
 import com.gagneflow.config.security.CurrentUser;
 import com.gagneflow.constant.UserConstants;
 import com.gagneflow.dto.LessonPlanRequest;
@@ -64,6 +65,8 @@ public class LessonController {
     private AddrfPipeline addrfPipeline;
     @Autowired
     private ChatService chatService;
+    @Autowired
+    private LessonPlanTools lessonPlanTools;
     @Autowired
     private ChatSessionService chatSessionService;
     @Autowired
@@ -203,6 +206,8 @@ public class LessonController {
                 this.chatSessionService.saveMessage(uid, sid, "user",
                         req.getStage() + " " + req.getGrade() + "年级 " + req.getSubject());
                 this.chatSessionService.saveMessage(uid, sid, "assistant", html);
+                // 教案长驻存档(Redis 7天): 供对话 agent 通过 getLatestLessonPlan 检索最近教案
+                this.lessonPlanTools.archiveLatestLessonPlan(uid, sid, html);
             } catch (Exception mysqlEx) {
                 logger.error("MySQL 教案持久化失败 (Redis 已写入): {}", mysqlEx.getMessage());
             }

@@ -3,6 +3,7 @@ package com.gagneflow.repository;
 import java.time.Instant;
 import java.util.List;
 import com.gagneflow.entity.SessionMessage;
+import org.springframework.data.domain.Pageable;
 import org.springframework.data.jpa.repository.JpaRepository;
 import org.springframework.data.jpa.repository.Query;
 import org.springframework.transaction.annotation.Transactional;
@@ -21,4 +22,7 @@ extends JpaRepository<SessionMessage, Long> {
     @Transactional
     @Query(value="DELETE FROM SessionMessage m WHERE m.userId = ?1 AND m.sessionId = ?2 AND m.createTime < ?3")
     public void deleteByUserIdAndSessionIdAndCreateTimeBefore(Long var1, String var2, Instant var3);
+
+    @Query(value="SELECT m FROM SessionMessage m WHERE m.userId = ?1 AND m.role = ?2 AND m.content LIKE CONCAT(?3, '%') ORDER BY m.createTime DESC")
+    public List<SessionMessage> findLatestByUserIdAndRoleAndContentPrefix(Long var1, String var2, String var3, Pageable var4);
 }

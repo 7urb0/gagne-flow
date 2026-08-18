@@ -75,6 +75,9 @@ public class AddrfPipeline {
     private boolean analysisClarifyEnabled;
     @org.springframework.beans.factory.annotation.Value("${gagneflow.addrf.max-clarify-questions:3}")
     private int maxClarifyQuestions;
+    // 2026-08-18: Analysis 缓存 TTL(小时), 由 1h 延长至 6h 减少重复调用
+    @org.springframework.beans.factory.annotation.Value("${gagneflow.addrf.analysis-cache-ttl-hours:6}")
+    private int analysisCacheTtlHours;
     // 2026-08-18: 进行中的流水线结果注册表(sessionId -> result), 供用户评分接口写入 userScore
     private final ConcurrentHashMap<String, AddrfResult> activeResults = new ConcurrentHashMap<>();
 
@@ -619,7 +622,7 @@ public class AddrfPipeline {
 
     private void tryCacheAnalysis(String cacheKey, String analysis) {
         try {
-            this.redisTemplate.opsForValue().set(cacheKey, analysis, Duration.ofHours(1));
+            this.redisTemplate.opsForValue().set(cacheKey, analysis, Duration.ofHours(this.analysisCacheTtlHours));
             logger.debug("[ADDRF] Analysis \u7f13\u5b58\u5199\u5165: {}", cacheKey);
         } catch (Exception e) {
             logger.debug("[ADDRF] Analysis \u7f13\u5b58\u5199\u5165\u5931\u8d25: {}", e.getMessage());

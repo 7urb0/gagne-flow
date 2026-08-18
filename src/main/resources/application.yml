@@ -38,6 +38,9 @@ gagneflow:
   lesson-plan:
     addrf-enabled: true
     k12-index-enabled: ${K12_INDEX_ENABLED:false}  # 已退役: 知识库由课标原文(curriculum_2022)接管, 默认不再灌自建知识点
+  lesson:
+    # 教案长驻存档: 最近教案 HTML 在 Redis 的保留天数(供对话 agent 检索"上次的教案")
+    archive-ttl-days: ${LESSON_ARCHIVE_TTL_DAYS:7}
   # 记忆反哺: 用户偏好(LTM)注入 Design/Development/Review 阶段(2026-08-17)
   personalization:
     enabled: ${PERSONALIZATION_ENABLED:true}
@@ -46,6 +49,8 @@ gagneflow:
     # Analysis 前置意图理解 + 澄清问题(2026-08-18 一期): 建议式推送不阻塞
     analysis-clarify-enabled: ${ADDRF_CLARIFY_ENABLED:true}
     max-clarify-questions: 3
+    # Analysis 结果缓存 TTL(小时), 1h -> 6h 减少重复 LLM 调用
+    analysis-cache-ttl-hours: ${ADDRF_ANALYSIS_CACHE_TTL_HOURS:6}
   pipeline:
     # ADDRF 流水线阶段顺序（可增删调序）
     stages:

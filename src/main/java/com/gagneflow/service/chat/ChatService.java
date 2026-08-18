@@ -9,6 +9,7 @@ import java.util.List;
 import java.util.Map;
 import com.gagneflow.agent.tool.DateTimeTools;
 import com.gagneflow.agent.tool.InternalDocsTools;
+import com.gagneflow.agent.tool.LessonPlanTools;
 import org.slf4j.Logger;
 import org.slf4j.LoggerFactory;
 import org.springframework.ai.chat.messages.AssistantMessage;
@@ -26,6 +27,8 @@ public class ChatService {
     private InternalDocsTools internalDocsTools;
     @Autowired
     private DateTimeTools dateTimeTools;
+    @Autowired
+    private LessonPlanTools lessonPlanTools;
     @Autowired(required=false)
     private ToolCallbackProvider tools;
     @Autowired
@@ -56,6 +59,7 @@ public class ChatService {
         systemPromptBuilder.append("\u4f60\u662f\u4e00\u4e2a\u4e13\u4e1a\u7684 AI \u6559\u80b2\u52a9\u624b\uff0c\u4e13\u6ce8\u4e8e\u5e2e\u52a9\u6559\u5e08\u8bbe\u8ba1\u6559\u6848\u3001\u5206\u6790\u6559\u5b66\u5185\u5bb9\u3001\u68c0\u7d22\u8bfe\u7a0b\u8d44\u6e90\u3002\n");
         systemPromptBuilder.append("\u5f53\u7528\u6237\u8be2\u95ee\u65f6\u95f4\u76f8\u5173\u95ee\u9898\u65f6\uff0c\u4f7f\u7528 getCurrentDateTime \u5de5\u5177\u3002\n");
         systemPromptBuilder.append("\u5f53\u7528\u6237\u9700\u8981\u67e5\u8be2\u6559\u5b66\u8d44\u6599\u3001\u8bfe\u7a0b\u6807\u51c6\u3001\u6559\u6848\u6a21\u677f\u6216\u6559\u80b2\u7b56\u7565\u65f6\uff0c\u4f7f\u7528 queryInternalDocs \u5de5\u5177\u68c0\u7d22\u77e5\u8bc6\u5e93\u3002\n");
+        systemPromptBuilder.append("\u5f53\u7528\u6237\u8be2\u95ee\u4e0a\u6b21\u7684\u6559\u6848\u3001\u4e4b\u524d\u751f\u6210\u7684\u6559\u6848\u6216\u8981\u6c42\u91cd\u65b0\u53d1\u4e00\u4efd\u6559\u6848\u65f6\uff0c\u4f7f\u7528 getLatestLessonPlan \u5de5\u5177\u83b7\u53d6\u6700\u8fd1\u751f\u6210\u7684\u6559\u6848\u3002\n");
         systemPromptBuilder.append("\u5982\u679c\u5bf9\u8bdd\u5386\u53f2\u4e2d\u5df2\u5b58\u5728\u6559\u6848\u5185\u5bb9\uff0c\u8bf7\u57fa\u4e8e\u7528\u6237\u7684\u4fee\u6539\u6307\u4ee4\u4f18\u5316\u6559\u6848\uff0c\u800c\u975e\u5b8c\u5168\u91cd\u65b0\u751f\u6210\uff0c\u4fdd\u7559\u672a\u88ab\u63d0\u53ca\u4fee\u6539\u7684\u90e8\u5206\u3002\n\n");
         if (longTermContext != null && !longTermContext.isEmpty()) {
             systemPromptBuilder.append(longTermContext).append("\n\n");
@@ -91,7 +95,7 @@ public class ChatService {
      * 所有需要标准工具数组的调用方均应通过此方法获取。
      */
     public Object[] buildStandardMethodTools() {
-        return new Object[]{this.dateTimeTools, this.internalDocsTools};
+        return new Object[]{this.dateTimeTools, this.internalDocsTools, this.lessonPlanTools};
     }
 
     public ToolCallback[] getToolCallbacks() {
