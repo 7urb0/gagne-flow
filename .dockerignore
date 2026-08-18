@@ -1,0 +1,16 @@
+# 构建上下文排除（2026-08-18 新增）
+target/
+volumes/
+uploads/
+lesson-plan-docs/curriculum_ocr/
+lesson-plan-docs/*_chunks*.json
+lesson-plan-docs/*.png
+lesson-plan-docs/*.pdf
+docs/
+.git/
+.gitignore
+*.log
+.env
+.mvn/wrapper/maven-wrapper.properties
+Dockerfile
+.dockerignore

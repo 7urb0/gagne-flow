@@ -29,6 +29,10 @@ gagneflow:
     conflict-llm-model: ${LTM_CONFLICT_LLM_MODEL:qwen-turbo}
   k12:
     path: lesson-plan-docs/k12_curriculum.json
+  pdf:
+    # 中文字体路径(2026-08-18): Docker 镜像内为 /usr/share/fonts/truetype/wqy/wqy-zenhei.ttc,
+    # 本地留空则走 addChineseFonts 硬编码路径(Windows/macOS/Linux 自动探测)
+    font-path: ${GAGNEFLOW_PDF_FONT_PATH:}
   auth:
     jwt-secret: ${JWT_SECRET}  # P0修复: 强制从环境变量读取，移除不安全默认值
   pool:
