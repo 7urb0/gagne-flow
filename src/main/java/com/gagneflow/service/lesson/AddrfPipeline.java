@@ -552,7 +552,9 @@ public class AddrfPipeline {
     private final java.util.concurrent.ConcurrentHashMap<String, StringBuilder> interimBuffers = new java.util.concurrent.ConcurrentHashMap<>();
     private final java.util.concurrent.ConcurrentHashMap<String, Long> interimLastFlush = new java.util.concurrent.ConcurrentHashMap<>();
     private static final int INTERIM_FLUSH_CHARS = 50;
-    private static final long INTERIM_FLUSH_MS = 100L;
+    // 2026-08-19 修复: 100ms 太短(LLM 吐字间隔本身就 >100ms), 时间条件每次触发导致节流失效
+    // 改 500ms 兜底: 50 字为主触发, 时间只防残留卡住(慢速吐字时也能流畅输出)
+    private static final long INTERIM_FLUSH_MS = 500L;
 
     private void emitInterim(SseEmitter emitter, String stage, String chunk) {
         if (emitter == null || chunk == null || chunk.isEmpty()) {
