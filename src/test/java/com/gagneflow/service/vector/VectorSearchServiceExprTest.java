@@ -18,11 +18,31 @@ class VectorSearchServiceExprTest {
     class BuildSearchExprTests {
 
         @Test
-        @DisplayName("表达式包含反哺教案分数门槛 _score >= 85")
-        void exprContainsScoreThreshold() {
+        @DisplayName("biz 表达式不再包含教案分数门槛(2026-08-19 已独立到 personal_plans)")
+        void exprContainsNoLessonPlanScoreThreshold() {
             String expr = VectorSearchService.buildSearchExpr(1L);
-            assertTrue(expr.contains("metadata[\"_score\"] >= 85"),
-                    "表达式应包含反哺教案分数门槛，实际: " + expr);
+            assertFalse(expr.contains("metadata[\"_score\"]"),
+                    "biz 表达式不应再包含教案分数门槛(教案已独立个人库)，实际: " + expr);
+            assertTrue(expr.contains("generated_lesson_plan"),
+                    "biz 表达式仍应排除遗留的教案来源，实际: " + expr);
+        }
+
+        @Test
+        @DisplayName("个人教案库表达式包含 _user_id 精确过滤 + 分数门槛")
+        void personalPlansExprContainsFilter() {
+            String expr = VectorSearchService.buildPersonalPlansExpr(1L);
+            assertTrue(expr.contains("metadata[\"_user_id\"] == \"1\""),
+                    "个人库表达式应包含用户隔离，实际: " + expr);
+        }
+
+        @Test
+        @DisplayName("doSearch 双库合并: 个人教案库查询带分数门槛")
+        void personalPlansSearchExprWithScoreThreshold() {
+            // 检索端在 doSearch 内拼接 (个人库expr) && _score >= 85
+            String personalExpr = VectorSearchService.buildPersonalPlansExpr(1L);
+            String combined = "(" + personalExpr + ") && metadata[\"_score\"] >= 85";
+            assertTrue(combined.contains("metadata[\"_score\"] >= 85"),
+                    "个人教案库检索应带分数门槛，实际: " + combined);
         }
 
         @Test
@@ -52,15 +72,12 @@ class VectorSearchServiceExprTest {
         }
 
         @Test
-        @DisplayName("非反哺来源文档不受分数门槛限制")
-        void exprScopeLimitedToLessonPlan() {
+        @DisplayName("biz 表达式排除反哺教案来源(2026-08-19 教案已独立)")
+        void exprExcludesLessonPlanSource() {
             String expr = VectorSearchService.buildSearchExpr(1L);
-            // 分数门槛必须限定在 generated_lesson_plan 来源内
-            int scoreIdx = expr.indexOf("metadata[\"_score\"]");
-            int sourceIdx = expr.lastIndexOf("generated_lesson_plan");
-            assertTrue(sourceIdx >= 0, "表达式应限定反哺教案来源，实际: " + expr);
-            assertTrue(scoreIdx > sourceIdx,
-                    "分数门槛应在 generated_lesson_plan 条件之后（限定作用域），实际: " + expr);
+            // 教案已独立到 personal_plans, biz 表达式应显式排除历史遗留的 generated_lesson_plan
+            assertTrue(expr.contains("metadata[\"_source\"] != \"generated_lesson_plan\""),
+                    "biz 表达式应排除教案来源，实际: " + expr);
         }
 
         @Test

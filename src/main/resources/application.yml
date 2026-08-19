@@ -207,6 +207,8 @@ milvus:
   password: ${MILVUS_PASSWORD:}
   database: ${MILVUS_DATABASE:default}
   timeout: 10000
+  # 2026-08-19: 反哺教案独立个人库 collection 名(可配)
+  personal-plans-collection: ${MILVUS_PERSONAL_PLANS_COLLECTION:personal_plans}
   search:
     nprobe: ${MILVUS_NPROBE:16}
     nprobe-max: ${MILVUS_NPROBE_MAX:64}

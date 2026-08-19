@@ -76,24 +76,24 @@ class MilvusClientFactoryTest {
     }
 
     @Test
-    void createBizCollection_success_noThrow() throws Exception {
+    void createCollection_success_noThrow() throws Exception {
         MilvusClientFactory f = newFactory();
         MilvusServiceClient client = mock(MilvusServiceClient.class);
         R r = mock(R.class);
         when(r.getStatus()).thenReturn(0);
         when(client.createCollection(any(CreateCollectionParam.class))).thenReturn(r);
-        assertDoesNotThrow(() -> ReflectionTestUtils.invokeMethod(f, "createBizCollection", client));
+        assertDoesNotThrow(() -> ReflectionTestUtils.invokeMethod(f, "createCollection", client, "biz", "desc"));
     }
 
     @Test
-    void createBizCollection_failure_throws() throws Exception {
+    void createCollection_failure_throws() throws Exception {
         MilvusClientFactory f = newFactory();
         MilvusServiceClient client = mock(MilvusServiceClient.class);
         R r = mock(R.class);
         when(r.getStatus()).thenReturn(1);
         when(client.createCollection(any(CreateCollectionParam.class))).thenReturn(r);
         assertThrows(RuntimeException.class,
-                () -> ReflectionTestUtils.invokeMethod(f, "createBizCollection", client));
+                () -> ReflectionTestUtils.invokeMethod(f, "createCollection", client, "biz", "desc"));
     }
 
     @Test
@@ -103,7 +103,7 @@ class MilvusClientFactoryTest {
         R r = mock(R.class);
         when(r.getStatus()).thenReturn(0);
         when(client.createIndex(any(CreateIndexParam.class))).thenReturn(r);
-        assertDoesNotThrow(() -> ReflectionTestUtils.invokeMethod(f, "createIndexes", client));
+        assertDoesNotThrow(() -> ReflectionTestUtils.invokeMethod(f, "createIndexes", client, "biz"));
     }
 
     @Test
@@ -114,6 +114,6 @@ class MilvusClientFactoryTest {
         when(r.getStatus()).thenReturn(1);
         when(client.createIndex(any(CreateIndexParam.class))).thenReturn(r);
         assertThrows(RuntimeException.class,
-                () -> ReflectionTestUtils.invokeMethod(f, "createIndexes", client));
+                () -> ReflectionTestUtils.invokeMethod(f, "createIndexes", client, "biz"));
     }
 }

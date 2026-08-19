@@ -258,11 +258,11 @@ public class VectorIndexService {
                 throw new RuntimeException("分片准备失败: " + e.getMessage(), e);
             }
         }
-        // 6. 写入 Milvus
+        // 6. 写入 Milvus(2026-08-19: 反哺教案独立到 personal_plans 个人库)
         try {
-            this.loadCollectionIfNeeded();
+            this.loadCollectionIfNeeded(com.gagneflow.constant.MilvusConstants.PERSONAL_PLANS_COLLECTION);
             InsertParam insertParam = InsertParam.newBuilder()
-                    .withCollectionName("biz")
+                    .withCollectionName(com.gagneflow.constant.MilvusConstants.PERSONAL_PLANS_COLLECTION)
                     .withFields(Arrays.asList(
                             new InsertParam.Field("id", ids),
                             new InsertParam.Field("content", contents),
@@ -336,7 +336,11 @@ public class VectorIndexService {
     }
 
     private void loadCollectionIfNeeded() {
-        R loadResponse = this.milvusClient.loadCollection(LoadCollectionParam.newBuilder().withCollectionName("biz").build());
+        loadCollectionIfNeeded("biz");
+    }
+
+    private void loadCollectionIfNeeded(String collectionName) {
+        R loadResponse = this.milvusClient.loadCollection(LoadCollectionParam.newBuilder().withCollectionName(collectionName).build());
         if (loadResponse.getStatus() != 0 && loadResponse.getStatus() != 65535) {
             logger.warn("\u52a0\u8f7d collection \u65f6\u51fa\u73b0\u5f02\u5e38: {}", (Object)loadResponse.getMessage());
         }
@@ -347,7 +351,8 @@ public class VectorIndexService {
             String expr = String.format("metadata[\"_source\"] == \"%s\"", normalizedPath);
             logger.debug("\u5220\u9664\u8868\u8fbe\u5f0f: {}", (Object)expr);
             this.loadCollectionIfNeeded();
-            DeleteParam deleteParam = DeleteParam.newBuilder().withCollectionName("biz").withExpr(expr).build();
+            DeleteParam deleteParam = DeleteParam.newBuilder()
+                    .withCollectionName(com.gagneflow.constant.MilvusConstants.MILVUS_COLLECTION_NAME).withExpr(expr).build();
             R response = this.milvusClient.delete(deleteParam);
             if (response.getStatus() != 0) {
                 logger.warn("\u5220\u9664\u65e7\u6570\u636e\u65f6\u51fa\u73b0\u8b66\u544a: {}", (Object)response.getMessage());

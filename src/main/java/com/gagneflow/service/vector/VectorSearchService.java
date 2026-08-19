@@ -49,7 +49,12 @@ public class VectorSearchService {
 
     @CircuitBreaker(name="milvus", fallbackMethod="searchSimilarDocumentsFallback")
     public List<SearchResult> searchSimilarDocuments(String query, int topK) {
-        return doSearch(query, topK, this.nprobe, 0L);
+        // 2026-08-19: 教案反哺已独立到 personal_plans, 去重探针改为查个人教案库(全用户, 防同教案重复回灌)
+        return searchCollection(
+                com.gagneflow.constant.MilvusConstants.PERSONAL_PLANS_COLLECTION,
+                query, topK, this.nprobe,
+                this.embeddingService.generateQueryVector(query),
+                "metadata[\"_source\"] == \"generated_lesson_plan\"");
     }
 
     /**
@@ -78,16 +83,39 @@ public class VectorSearchService {
     }
 
     private List<SearchResult> doSearch(String query, int topK, int nprobeVal, Long userId) {
-        SearchParam searchParam;
-        R searchResponse;
+        // 2026-08-19: 双 collection 查询合并 - biz(课标+上传文档) + personal_plans(个人教案)
+        ArrayList<SearchResult> results = new ArrayList<>();
         List<Float> queryVector = this.embeddingService.generateQueryVector(query);
-        // P0修复: 使用 L2 距离，与索引端 MetricType 一致
-        SearchParam.Builder builder = SearchParam.newBuilder().withCollectionName("biz").withVectorFieldName("vector").withVectors(Collections.singletonList(queryVector)).withTopK(Integer.valueOf(topK)).withMetricType(MetricType.L2).withOutFields(List.of("id", "content", "metadata")).withParams(String.format("{\"nprobe\":%d}", nprobeVal));
+        // 1. 公共知识库 biz 检索
+        results.addAll(searchCollection("biz", query, topK, nprobeVal, queryVector, buildSearchExpr(userId)));
+        // 2. 个人教案库 personal_plans 检索(仅登录用户; 教案必须 _score >= 门槛才进候选, 宁缺毋滥)
         if (userId != null && userId > 0L) {
-            builder.withExpr(buildSearchExpr(userId));
+            try {
+                results.addAll(searchCollection(
+                        com.gagneflow.constant.MilvusConstants.PERSONAL_PLANS_COLLECTION,
+                        query, topK, nprobeVal, queryVector,
+                        String.format("(%s) && metadata[\"_score\"] >= %d",
+                                buildPersonalPlansExpr(userId), MIN_LESSON_PLAN_SCORE)));
+            } catch (Exception e) {
+                logger.warn("[ADDRF] \u4e2a\u4eba\u6559\u6848\u5e93\u68c0\u7d22\u5931\u8d25(\u4e0d\u5f71\u54cd biz \u7ed3\u679c): {}", e.getMessage());
+            }
         }
-        if ((searchResponse = this.milvusClient.search(searchParam = builder.build())).getStatus() != 0) {
-            throw new RuntimeException("\u5411\u91cf\u641c\u7d22\u5931\u8d25: " + searchResponse.getMessage());
+        // 3. 按相似度降序合并
+        results.sort((a, b) -> Float.compare(b.getScore(), a.getScore()));
+        return results;
+    }
+
+    /** \u5355 collection \u68c0\u7d22\uff08\u590d\u7528\u539f doSearch \u5185\u6838\uff09 */
+    private List<SearchResult> searchCollection(String collectionName, String query, int topK, int nprobeVal,
+                                                List<Float> queryVector, String expr) {
+        // P0\u4fee\u590d: \u4f7f\u7528 L2 \u8ddd\u79bb\uff0c\u4e0e\u7d22\u5f15\u7aef MetricType \u4e00\u81f4
+        SearchParam.Builder builder = SearchParam.newBuilder().withCollectionName(collectionName).withVectorFieldName("vector").withVectors(Collections.singletonList(queryVector)).withTopK(Integer.valueOf(topK)).withMetricType(MetricType.L2).withOutFields(List.of("id", "content", "metadata")).withParams(String.format("{\"nprobe\":%d}", nprobeVal));
+        if (expr != null && !expr.isBlank()) {
+            builder.withExpr(expr);
+        }
+        R searchResponse = this.milvusClient.search(builder.build());
+        if (searchResponse.getStatus() != 0) {
+            throw new RuntimeException("\u5411\u91cf\u641c\u7d22\u5931\u8d25(" + collectionName + "): " + searchResponse.getMessage());
         }
         SearchResultsWrapper wrapper = new SearchResultsWrapper(((SearchResults)searchResponse.getData()).getResults());
         ArrayList<SearchResult> results = new ArrayList<>();
@@ -96,7 +124,7 @@ public class VectorSearchService {
             result.setId((String)((SearchResultsWrapper.IDScore)wrapper.getIDScore(0).get(i)).get("id"));
             result.setContent((String)wrapper.getFieldData("content", 0).get(i));
             double l2Score = ((SearchResultsWrapper.IDScore)wrapper.getIDScore(0).get(i)).getScore();
-            // L2距离转相似度: score = 1/(1+distance), 距离越小相似度越高
+            // L2\u8ddd\u79bb\u8f6c\u76f8\u4f3c\u5ea6: score = 1/(1+distance), \u8ddd\u79bb\u8d8a\u5c0f\u76f8\u4f3c\u5ea6\u8d8a\u9ad8
             result.setScore((float)(1.0 / (1.0 + l2Score)));
             Object metaObj = wrapper.getFieldData("metadata", 0).get(i);
             if (metaObj != null) {
@@ -115,12 +143,18 @@ public class VectorSearchService {
      */
     static String buildSearchExpr(Long userId) {
         String uid = String.valueOf(userId != null ? userId : 0L);
-        // 用户数据 + 反哺教案分数门槛 + 公共课标原文(无归属) + 无归属文档
+        // 2026-08-19: 教案反哺已独立到 personal_plans collection, biz 不再包含 generated_lesson_plan
+        // biz 检索 = 本人上传文档 + 公共课标/无归属文档, 无需再拼教案分数门槛
         return String.format(
-                "(metadata[\"_user_id\"] == \"%s\" && (metadata[\"_source\"] != \"generated_lesson_plan\""
-                        + " || metadata[\"_score\"] >= %d))"
+                "(metadata[\"_user_id\"] == \"%s\" && metadata[\"_source\"] != \"generated_lesson_plan\")"
                         + " || not exists metadata[\"_user_id\"]",
-                uid, MIN_LESSON_PLAN_SCORE);
+                uid);
+    }
+
+    /** 2026-08-19: 个人教案库检索过滤 - 仅本人教案(_user_id 精确匹配) */
+    static String buildPersonalPlansExpr(Long userId) {
+        String uid = String.valueOf(userId != null ? userId : 0L);
+        return String.format("metadata[\"_user_id\"] == \"%s\"", uid);
     }
 
     public List<SearchResult> searchWithRerank(String query) {
