@@ -100,34 +100,44 @@ class VectorSearchServiceExprTest {
     @DisplayName("表达式语义（单条 metadata 过滤行为）")
     class ExprSemanticTests {
 
-        /** 与 buildSearchExpr 表达式语义一致的轻量求值器 */
+        /**
+         * 2026-08-19 新语义: 教案已独立到 personal_plans, biz 检索不看教案分数门槛。
+         * 此求值器仅模拟 biz 过滤(buildSearchExpr): 无归属放行 + 本人数据放行 + 遗留教案来源排除。
+         * 教案分数门槛由个人库检索端(buildPersonalPlansExpr && _score>=85)负责, 见 passPersonalPlansFilter。
+         */
         static boolean passFilter(Long uid, java.util.Map<String, Object> md) {
             // 分支2: 无 _user_id 字段 -> 无归属文档放行（含教育部课标原文 curriculum_2022）
             if (!md.containsKey("_user_id")) {
                 return true;
             }
-            // 分支1: 用户数据（含用户上传文档与反哺教案）
+            // 分支1: 用户数据（上传文档 + 遗留反哺教案）
             long mdUid = ((Number) md.get("_user_id")).longValue();
             long expectedUid = (uid == null) ? 0L : uid;
             if (mdUid != expectedUid) {
                 return false;
             }
-            if (!"generated_lesson_plan".equals(md.get("_source"))) {
-                return true; // 用户上传文档不受分数门槛限制
-            }
-            // 反哺教案: 分数门槛 _score >= 85
+            // 教案已独立到 personal_plans, biz 中的遗留教案来源显式排除
+            return !"generated_lesson_plan".equals(md.get("_source"));
+        }
+
+        /** 个人教案库检索过滤: 本人教案 + _score >= 85 */
+        static boolean passPersonalPlansFilter(Long uid, java.util.Map<String, Object> md) {
+            if (!md.containsKey("_user_id")) return false;
+            long mdUid = ((Number) md.get("_user_id")).longValue();
+            long expectedUid = (uid == null) ? 0L : uid;
+            if (mdUid != expectedUid) return false;
             int score = ((Number) md.get("_score")).intValue();
             return score >= VectorSearchService.MIN_LESSON_PLAN_SCORE;
         }
 
         @Test
-        @DisplayName("验收2a: 反哺教案 _score=70 被排除")
+        @DisplayName("验收2a: 反哺教案 _score=70 在个人库被排除(门槛)")
         void lowScoreLessonPlanExcluded() {
             java.util.Map<String, Object> md = new java.util.HashMap<>();
             md.put("_user_id", 1L);
             md.put("_source", "generated_lesson_plan");
             md.put("_score", 70);
-            assertFalse(passFilter(1L, md), "_score=70 的反哺教案不应进入候选");
+            assertFalse(passPersonalPlansFilter(1L, md), "_score=70 的反哺教案不应进入候选");
         }
 
         @Test
@@ -137,7 +147,7 @@ class VectorSearchServiceExprTest {
             md.put("_user_id", 1L);
             md.put("_source", "generated_lesson_plan");
             md.put("_score", 84);
-            assertFalse(passFilter(1L, md), "_score=84 反哺教案应被排除（<85）");
+            assertFalse(passPersonalPlansFilter(1L, md), "_score=84 反哺教案应被排除（<85）");
         }
 
         @Test
@@ -147,7 +157,7 @@ class VectorSearchServiceExprTest {
             md.put("_user_id", 1L);
             md.put("_source", "generated_lesson_plan");
             md.put("_score", 85);
-            assertTrue(passFilter(1L, md), "_score=85 反哺教案应进入候选（>=85）");
+            assertTrue(passPersonalPlansFilter(1L, md), "_score=85 反哺教案应进入候选（>=85）");
         }
 
         @Test
@@ -157,7 +167,18 @@ class VectorSearchServiceExprTest {
             md.put("_user_id", 1L);
             md.put("_source", "generated_lesson_plan");
             md.put("_score", 95);
-            assertTrue(passFilter(1L, md), "_score=95 反哺教案应进入候选");
+            assertTrue(passPersonalPlansFilter(1L, md), "_score=95 反哺教案应进入候选");
+        }
+
+        @Test
+        @DisplayName("个人库跨用户教案不可见(物理隔离)")
+        void personalPlansOtherUserExcluded() {
+            java.util.Map<String, Object> md = new java.util.HashMap<>();
+            md.put("_user_id", 2L);
+            md.put("_source", "generated_lesson_plan");
+            md.put("_score", 95);
+            assertFalse(passPersonalPlansFilter(1L, md), "用户2的教案对用户1不可见");
+            assertTrue(passPersonalPlansFilter(2L, md), "用户2本人可见");
         }
 
         @Test
@@ -187,13 +208,23 @@ class VectorSearchServiceExprTest {
         }
 
         @Test
-        @DisplayName("其他用户的文档被排除（数据隔离）")
+        @DisplayName("biz 中的遗留教案来源被显式排除")
+        void legacyLessonPlanInBizExcluded() {
+            java.util.Map<String, Object> md = new java.util.HashMap<>();
+            md.put("_user_id", 1L);
+            md.put("_source", "generated_lesson_plan");
+            md.put("_score", 95);
+            assertFalse(passFilter(1L, md), "biz 中遗留的教案来源应被排除(教案已独立)");
+        }
+
+        @Test
+        @DisplayName("个人库其他用户的教案被排除（物理隔离）")
         void otherUserExcluded() {
             java.util.Map<String, Object> md = new java.util.HashMap<>();
             md.put("_user_id", 2L);
             md.put("_source", "generated_lesson_plan");
             md.put("_score", 95);
-            assertFalse(passFilter(1L, md), "用户2的文档对用户1不可见");
+            assertFalse(passPersonalPlansFilter(1L, md), "用户2的教案对用户1不可见");
         }
     }
 }

@@ -158,8 +158,9 @@ public class VectorIndexService {
             }
         }
         // 修复BUG 1: 先删除旧数据，再插入新数据，避免新数据被同名 _source 条件误删
+        // 2026-08-19 加固: 删除表达式显式带 _user_id, 不依赖路径巧合隔离, 防跨用户误删
         try {
-            this.deleteExistingData(normalizedPath);
+            this.deleteExistingData(normalizedPath, userId);
             logger.info("\u2713 \u5df2\u6e05\u9664\u6587\u4ef6 {} \u7684\u65e7\u7d22\u5f15\u6570\u636e", (Object)normalizedPath);
         }
         catch (Exception e) {
@@ -210,12 +211,11 @@ public class VectorIndexService {
             logger.info("[回灌跳过] 规则校验未通过: {}", invalidReason);
             return;
         }
-        // 3. 相似度检查: 仅对比已有教案，不对比原始文档（教案与教材内容相似是合理的）
+        // 3. 相似度检查: 仅对比当前用户已有教案，不对比原始文档（教案与教材内容相似是合理的）
         try {
             String probe = plainText.length() > 300 ? plainText.substring(0, 300) : plainText;
-            // 注意: searchSimilarDocuments 使用全库搜索，需要在 doSearch 层面过滤 metadata
-            // 作为简化方案，此处不做过滤但降低阈值：教案与教材相似是正常的，仅排除极高相似度（>0.98）
-            List<SearchResult> existing = this.vectorSearchService.searchSimilarDocuments(probe, 1);
+            // 2026-08-19: 个人库去重 - 仅本人教案参与去重(跨用户教案不互相去重)
+            List<SearchResult> existing = this.vectorSearchService.searchSimilarLessonPlans(probe, 1, userId);
             if (!existing.isEmpty() && existing.get(0).getScore() > 0.98f) {
                 String source = existing.get(0).getMetadata();
                 boolean fromLessonPlan = source != null && source.contains("generated_lesson_plan");
@@ -346,10 +346,13 @@ public class VectorIndexService {
         }
     }
 
-    private void deleteExistingData(String normalizedPath) {
+    private void deleteExistingData(String normalizedPath, Long userId) {
         try {
-            String expr = String.format("metadata[\"_source\"] == \"%s\"", normalizedPath);
-            logger.debug("\u5220\u9664\u8868\u8fbe\u5f0f: {}", (Object)expr);
+            // 显式带 _user_id 隔离: 删除只影响当前用户在该路径下的数据
+            String uid = String.valueOf(userId != null ? userId : 0L);
+            String expr = String.format("(metadata[\"_user_id\"] == \"%s\") && metadata[\"_source\"] == \"%s\"",
+                    uid, normalizedPath);
+            logger.debug("删除表达式: {}", (Object)expr);
             this.loadCollectionIfNeeded();
             DeleteParam deleteParam = DeleteParam.newBuilder()
                     .withCollectionName(com.gagneflow.constant.MilvusConstants.MILVUS_COLLECTION_NAME).withExpr(expr).build();

@@ -49,12 +49,21 @@ public class VectorSearchService {
 
     @CircuitBreaker(name="milvus", fallbackMethod="searchSimilarDocumentsFallback")
     public List<SearchResult> searchSimilarDocuments(String query, int topK) {
-        // 2026-08-19: 教案反哺已独立到 personal_plans, 去重探针改为查个人教案库(全用户, 防同教案重复回灌)
+        // 2026-08-19: 教案反哺独立到 personal_plans 后, 去重探针查个人教案库(仅当前用户, 防同用户重复教案)
+        return searchSimilarLessonPlans(query, topK, 0L);
+    }
+
+    /** 2026-08-19: 个人教案库去重探针 - 仅查指定用户的教案(_user_id 精确匹配), 跨用户教案不互相去重 */
+    public List<SearchResult> searchSimilarLessonPlans(String query, int topK, Long userId) {
+        String expr = "metadata[\"_source\"] == \"generated_lesson_plan\"";
+        if (userId != null && userId > 0L) {
+            expr = "(" + buildPersonalPlansExpr(userId) + ") && metadata[\"_source\"] == \"generated_lesson_plan\"";
+        }
         return searchCollection(
                 com.gagneflow.constant.MilvusConstants.PERSONAL_PLANS_COLLECTION,
                 query, topK, this.nprobe,
                 this.embeddingService.generateQueryVector(query),
-                "metadata[\"_source\"] == \"generated_lesson_plan\"");
+                expr);
     }
 
     /**
