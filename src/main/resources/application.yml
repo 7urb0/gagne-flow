@@ -57,6 +57,9 @@ gagneflow:
     clarify-wait-seconds: ${ADDRF_CLARIFY_WAIT_SECONDS:45}
     # Analysis 结果缓存 TTL(小时), 1h -> 6h 减少重复 LLM 调用
     analysis-cache-ttl-hours: ${ADDRF_ANALYSIS_CACHE_TTL_HOURS:6}
+    # 2026-08-19: 反哺综合分权重 — 用户评分占比(0-1), LLM 分占比 = 1-weight
+    # 个人教案库(user_id 隔离)场景用户认可应参与入库决策; 未评分时仍用 LLM 分兜底
+    feedback-user-weight: ${ADDRF_FEEDBACK_USER_WEIGHT:0.6}
   pipeline:
     # ADDRF 流水线阶段顺序（可增删调序）
     stages:

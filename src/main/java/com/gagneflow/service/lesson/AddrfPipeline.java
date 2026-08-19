@@ -64,6 +64,9 @@ public class AddrfPipeline {
     private final com.gagneflow.service.memory.ConversationMemoryManager memoryManager;
     private final ThreadPoolExecutor executor;
     private final StringRedisTemplate redisTemplate;
+    // 阶段C: 回灌延后到评分窗口关闭时定案, 需注入 VectorIndexService 执行入库(字段注入避免破坏直接 new 构造的单测)
+    @Autowired(required = false)
+    private com.gagneflow.service.vector.VectorIndexService vectorIndexService;
     // 2026-08-19 修复: 单例 future 多用户并发互相覆盖 -> 按 sessionId 隔离
     private final ConcurrentHashMap<String, CompletableFuture<Void>> reviewFutures = new ConcurrentHashMap<>();
     @Deprecated
@@ -87,10 +90,50 @@ public class AddrfPipeline {
     private int analysisCacheTtlHours;
     // 2026-08-18: 进行中的流水线结果注册表(sessionId -> result), 供用户评分接口写入 userScore
     private final ConcurrentHashMap<String, AddrfResult> activeResults = new ConcurrentHashMap<>();
+    // 2026-08-19 联调修复: 评分窗口时长(秒) — Review 完成后保留 entry, 供用户在查看完整教案后打分
+    // 用实例字段(非 static final)便于单测注入短窗口验证
+    private long scoreWindowSeconds = 300L;
+
+    // 2026-08-19: 反哺综合分权重 — 用户评分占比(0-1), LLM 评分占比 = 1 - userWeight
+    // 个人教案库(user_id 隔离)不再需要"公共库质量优先", 用户主观认可应参与入库决策
+    @org.springframework.beans.factory.annotation.Value("${gagneflow.addrf.feedback-user-weight:0.6}")
+    private double feedbackUserWeight = 0.6;
 
     /** 供 LessonController 用户评分接口通过 sessionId 定位 result */
     public AddrfResult getActiveResult(String sessionId) {
         return sessionId == null ? null : this.activeResults.get(sessionId);
+    }
+
+    /** 供 LessonController 评分成功后主动移除, 提前关闭评分窗口 */
+    public void removeActiveResult(String sessionId) {
+        if (sessionId != null) {
+            this.activeResults.remove(sessionId);
+        }
+    }
+
+    /**
+     * Review 完成后延迟移除注册表: 用户需先查看完整教案(updated 事件)再打分,
+     * 若 Review 完成立即移除则评分必然 404(联调实测)。延迟 SCORE_WINDOW_SECONDS 兜底防泄漏。
+     */
+    private void scheduleScoreWindowClose(String sessionId) {
+        if (sessionId == null) return;
+        long windowMs = this.scoreWindowSeconds * 1000L;
+        CompletableFuture.runAsync(() -> {
+            try {
+                Thread.sleep(windowMs);
+            } catch (InterruptedException e) {
+                Thread.currentThread().interrupt();
+            }
+            // 阶段C(回灌延后): 评分窗口关闭时最终定案。未评分用户走此路径(consolidateQuality 仅对竞态防御),
+            // 已评分用户已在评分接口 maybeBackfillNow 定案并释放 entry。
+            this.consolidateQuality(sessionId);
+            AddrfResult r = this.activeResults.get(sessionId);
+            if (r != null) {
+                this.maybeBackfillNow(r);
+            }
+            this.activeResults.remove(sessionId);
+            logger.debug("[ADDRF] 评分窗口关闭: sessionId={}", sessionId);
+        }, this.executor);
     }
 
     @Autowired
@@ -284,14 +327,23 @@ public class AddrfPipeline {
                     result.html = this.formatTool.format(result.analysis, result.design, result.development, result.review);
                     emitter.send(SseEmitter.event().name("message").data(Map.of("type", "stage:format", "content", result.html, "stage", "format", "updated", true, "sessionId", sessionId)));
                 }
+                catch (IllegalStateException e) {
+                    // 2026-08-19 联调: emitter 已完成(done 后框架关闭)属预期时序, 教案已持久化兜底, 静默降级
+                    logger.trace("[ADDRF] Review 更新 HTML 跳过 (emitter 已关闭): {}", e.getMessage());
+                }
                 catch (Exception e) {
-                    logger.warn("[ADDRF] Review 更新 HTML 推送失败 (emitter 可能已关闭): {}", e.getMessage());
+                    logger.warn("[ADDRF] Review 更新 HTML 推送失败: {}", e.getMessage());
                 }
-                this.emitStageComplete(emitter, "stage:review", result.review);
-                // 2026-08-19 修复: 正常路径也移除注册表(原仅在降级分支移除 -> 每份教案泄漏一个 entry)
-                if (sessionId != null) {
-                    this.activeResults.remove(sessionId);
+                try {
+                    this.emitStageComplete(emitter, "stage:review", result.review);
                 }
+                catch (RuntimeException e) {
+                    // emitter 已关闭时 emitStageComplete 内部抛 IllegalStateException, 属预期
+                    logger.trace("[ADDRF] stage:review 推送跳过 (emitter 已关闭): {}", e.getMessage());
+                }
+                // 2026-08-19 联调修复: 延迟关闭评分窗口 — Review 完成后保留 entry 供用户打分,
+                // 立即移除会导致用户评分必然 404(前端在 Review 完成后才展示评分面板)
+                this.scheduleScoreWindowClose(sessionId);
             }, this.executor);
             // 2026-08-19 修复: 按 sessionId 存 future(消除多用户并发覆盖), 完成后移除
             if (sessionId != null) {
@@ -302,10 +354,8 @@ public class AddrfPipeline {
         } else {
             result.review = "[\u7cfb\u7edf\u63d0\u793a: \u6559\u6848\u4e3b\u4f53\u4e0d\u5b8c\u6574\uff0c\u8df3\u8fc7\u8bc4\u4f30]";
             this.emitStageComplete(emitter, "stage:review", result.review);
-                // 2026-08-18: Review 完成, 移除注册表(用户评分窗口关闭)
-                if (sessionId != null) {
-                    this.activeResults.remove(sessionId);
-                }
+            // 2026-08-19 联调修复: 同样延迟关闭评分窗口(与正常路径一致)
+            this.scheduleScoreWindowClose(sessionId);
         }
         return result;
     }
@@ -463,6 +513,7 @@ public class AddrfPipeline {
     }
 
     private void asyncReview(AddrfResult result, ChatModelPort chatModel, String devPrompt, SseEmitter emitter, String k12Ctx, String subject, Long userId, String sessionId) {
+        int prevScore = -1;
         for (int retryCount = 0; !(retryCount > 2 || result.development != null && result.development.startsWith(DEGRADED_PREFIX)); ++retryCount) {
             String reviewPrompt = this.loadPrompt("addrf_review", userId) + "\n\n\u8bfe\u7a0b\u6807\u51c6\uff1a\n" + k12Ctx;
             // 个性化注入: 用户评价标准入 Review 评分(核心), 避免按通用标准误判个性化教案
@@ -484,10 +535,50 @@ public class AddrfPipeline {
             } catch (Exception e) {
                 logger.debug("[ADDRF-REVIEW] \u8bb0\u5f55\u8bc4\u5206\u5931\u8d25: {}", e.getMessage());
             }
+            // 通过(>=70)或达到最大重试(2): 结束
             if (result.score >= 70 || retryCount >= 2) break;
+            // 收敛检测: 上一次重试后评分未有提升(Δ<5), 继续修改无意义, 停止自愈(业界 evaluator-optimizer 收敛检测)
+            if (prevScore >= 0 && Math.abs(result.score - prevScore) < 5) {
+                logger.info("[ADDRF-REVIEW] \u6536\u655b\u68c0\u6d4b: score={}(\u4e0a\u8f6e{}), \u5dee\u5f02\u5c0f\u4e8e5\u5206, \u505c\u6b62\u81ea\u6108", result.score, prevScore);
+                break;
+            }
+            prevScore = result.score;
             String feedback = this.extractFeedback(result.review);
             result.development = this.callAgent(chatModel, devPrompt + "\n\u4fee\u6539\u610f\u89c1\uff1a\n" + feedback, result.analysis, null, "development", "quick", 180, subject);
             if (result.development == null || result.development.startsWith(DEGRADED_PREFIX)) break;
+            // 自愈闭环: 重跑后的新 development 必须回传给前端(否则用户看到旧 development+新 review 的不一致组合)
+            this.pushRefreshedDevelopment(emitter, result, sessionId);
+        }
+    }
+
+    /**
+     * 阶段B: 重跑 development 后, 重新生成完整 HTML 并回传前端(修复自愈不闭环问题)。
+     * - 重新 format 生成 result.html, 以 stage:format(完整内容) 推送, 前端刷为修复后完整版
+     * - 再补一个 stage:development 预览(updated=true) 指示该阶段已更新
+     */
+    private void pushRefreshedDevelopment(SseEmitter emitter, AddrfResult result, String sessionId) {
+        try {
+            result.html = this.formatTool.format(result.analysis, result.design, result.development, result.review);
+        } catch (Exception e) {
+            logger.warn("[ADDRF-REVIEW] \u81ea\u6108\u540e\u91cd\u65b0\u683c\u5f0f\u5316\u5931\u8d25: {}", e.getMessage());
+            return;
+        }
+        try {
+            emitStageComplete(emitter, "stage:development", result.development, sessionId);
+            if (emitter != null) {
+                LinkedHashMap<String, Object> data = new LinkedHashMap<>();
+                data.put("type", "stage:format");
+                data.put("content", result.html);
+                data.put("stage", "format");
+                data.put("updated", true);
+                data.put("sessionId", sessionId);
+                emitter.send(SseEmitter.event().name("message").data(data));
+            }
+        } catch (IllegalStateException e) {
+            // emitter 已关闭(SSE 已 done)属预期, 教案已持久化兜底
+            logger.trace("[ADDRF-REVIEW] \u81ea\u6108\u56de\u4f20\u8df3\u8fc7 (emitter \u5df2\u5173\u95ed): {}", e.getMessage());
+        } catch (Exception e) {
+            logger.warn("[ADDRF-REVIEW] \u81ea\u6108\u56de\u4f20\u5931\u8d25: {}", e.getMessage());
         }
     }
 
@@ -802,17 +893,56 @@ public class AddrfPipeline {
         if (review == null) {
             return 0;
         }
-        Matcher m = Pattern.compile("\u603b\u5206[:\\s]+(\\d+)").matcher(review);
+        // 多写法兜底(与前端 parseScore 对齐, 消除 P4 契约漂移): 依次尝试
+        // 1) SCORE_JSON "score":N / "score":N(有无引号均可)  2) 总分: N  3) N/100
+        Matcher m = Pattern.compile("\"score\"\\s*[:：]\\s*(\\d+)").matcher(review);
         if (m.find()) {
-            return Integer.parseInt(m.group(1));
+            return clampScore(Integer.parseInt(m.group(1)));
         }
-        m = Pattern.compile("\"score\"\\s*:\\s*(\\d+)").matcher(review);
+        m = Pattern.compile("score\\s*[:：]\\s*(\\d+)").matcher(review);
         if (m.find()) {
-            return Integer.parseInt(m.group(1));
+            return clampScore(Integer.parseInt(m.group(1)));
+        }
+        m = Pattern.compile("\u603b\u5206\\s*[:：]?\\s*(\\d+)").matcher(review);
+        if (m.find()) {
+            return clampScore(Integer.parseInt(m.group(1)));
+        }
+        m = Pattern.compile("(\\d+)\\s*\\/\\s*100").matcher(review);
+        if (m.find()) {
+            return clampScore(Integer.parseInt(m.group(1)));
         }
         logger.warn("[ADDRF] 无法从 review 内容中解析评分，默认视为不通过: review 前200字符={}", 
                 review.length() > 200 ? review.substring(0, 200) : review);
         return 0;
+    }
+
+    /**
+     * 2026-08-19: 反哺综合分 — 个人教案库(user_id 隔离)场景下, 用户主观认可应参与入库决策与检索门槛。
+     * 规则:
+     *  - 未评分(userScore=0)或低分(1-2 星, 已被 HITL 阻断不会到达) -> 用 LLM 分(现状兜底)
+     *  - 3-5 星: 综合分 = userWeight * (userScore*20) + (1-userWeight) * llmScore
+     *    星数 x20 归一化到 100 分制; userWeight 默认 0.6(用户 6 成, LLM 4 成)
+     */
+    public int resolveFeedbackScore(AddrfResult r) {
+        if (r == null) {
+            return 0;
+        }
+        int llm = r.score;
+        int user = r.userScore;
+        if (user < 3) {
+            return llm; // 未评分或 1-2 星(阻断路径)
+        }
+        double userPct = user * 20.0; // 1-5 星 -> 20-100 分
+        double w = this.feedbackUserWeight;
+        if (w <= 0 || w >= 1) {
+            w = 0.6; // 配置越界兜底
+        }
+        return clampScore((int) Math.round(w * userPct + (1.0 - w) * llm));
+    }
+
+    /** 评分范围钳制 0-100, 避免 LLM 输出越界 */
+    private static int clampScore(int score) {
+        return Math.max(0, Math.min(100, score));
     }
 
     String extractFeedback(String review) {
@@ -831,44 +961,107 @@ public class AddrfPipeline {
     }
 
     /**
-     * HITL 判断: 四条触发规则，决定是否必须人工审核。
-     * 规则 1: Development 阶段输出超过 5000 字 → 长文本格式易漂移
-     * 规则 2: Review 评分 < 60 → 低分内容有风险
-     * 规则 3: 触发了降级（DEGRADED_PREFIX）→ 异常路径需确认
-     * 规则 4: 危险关键词（毒品/暴力/歧视/自残）→ 合规要求
+     * HITL 判定: 对"必须人工审核"的信号做等级分流, 而非无差别任一触发。
+     *   blocked(needsHumanReview=true, 主线程注入红色警示并跳过回灌):
+     *     - 评分过低(score<60)
+     *     - 存在降级输出(DEGRADED_PREFIX)
+     *     - 危险关键词(合规)
+     *     - 用户 1-2 星否决(userScore<=2, 与 asyncReview 结束时判定互补, 见 consolidateQuality)
+     *   info/warn(qualityNote, 仅提示不阻断回灌/不弹红色):
+     *     - Development 输出超长(>5000字) → 仅提示长文可能格式漂移, 不再误报为质量风险
+     * 用户低分否决的最终定案在评分窗口关闭时由 consolidateQuality 完成(解决评审晚于评分面板展示的时序)。
      */
     public boolean shouldRequestHumanReview(AddrfResult result, String subject, Long userId) {
-        // 规则 1: Development 输出超过 5000 字
+        // info: Development 输出超过 5000 字 → 仅提示(长文本易漂移), 不触发人工审核(方案 C 降级)
         if (result.development != null && result.development.length() > 5000) {
-            logger.info("[ADDRF-HITL] 规则1触发: Development 输出过长 ({}字)", result.development.length());
-            result.needsHumanReview = true;
-            return true;
+            result.qualityNote = "\u8b66\u793a\uff1a\u6559\u6848\u6559\u5b66\u8fc7\u7a0b\u8f83\u957f(" + result.development.length()
+                + "\u5b57)\uff0c\u53ef\u80fd\u5b58\u5728\u683c\u5f0f\u6f02\u79fb\uff0c\u5efa\u8bae\u68c0\u67e5\u8868\u683c\u4e0e\u5206\u7ae0\u3002";
+            logger.info("[ADDRF-HITL] \u63d0\u793a: Development \u8f93\u51fa\u8fc7\u957f ({}字, \u4ec5\u8b66\u544a\u4e0d\u963b\u65ad)", result.development.length());
         }
-        // 规则 2: Review 评分 < 60
+        // blocked: Review 评分 < 60
         if (result.score < 60 && result.score > 0) {
-            logger.info("[ADDRF-HITL] 规则2触发: Review 评分过低 ({})", result.score);
+            logger.info("[ADDRF-HITL] blocked: Review \u8bc4\u5206\u8fc7\u4f4e ({})", result.score);
             result.needsHumanReview = true;
             return true;
         }
-        // 规则 3: 存在降级输出（analysis/design/development/review 全覆盖）
+        // blocked: 存在降级输出（analysis/design/development/review 全覆盖）
         if ((result.analysis != null && result.analysis.startsWith(DEGRADED_PREFIX))
             || (result.design != null && result.design.startsWith(DEGRADED_PREFIX))
             || (result.development != null && result.development.startsWith(DEGRADED_PREFIX))
             || (result.review != null && result.review.startsWith(DEGRADED_PREFIX))) {
-            logger.info("[ADDRF-HITL] 规则3触发: 存在降级输出");
+            logger.info("[ADDRF-HITL] blocked: \u5b58\u5728\u964d\u7ea7\u8f93\u51fa");
             result.needsHumanReview = true;
             return true;
         }
-        // 规则 4: 危险关键词检测
+        // blocked: 危险关键词检测（合规）
         String combined = (result.development != null ? result.development : "")
             + (result.review != null ? result.review : "")
             + (result.analysis != null ? result.analysis : "");
         if (containsUnsafeKeyword(combined)) {
-            logger.info("[ADDRF-HITL] 规则4触发: 检测到危险关键词");
+            logger.info("[ADDRF-HITL] blocked: \u68c0\u6d4b\u5230\u5371\u9669\u5173\u952e\u8bcd");
+            result.needsHumanReview = true;
+            return true;
+        }
+        // blocked: 用户 1-2 星一票否决（快路径, 适用于评分早于 review 完成的情况）
+        if (result.userScore >= 1 && result.userScore <= 2) {
+            logger.warn("[ADDRF-HITL] blocked: \u7528\u6237\u4f4e\u5206\u4e00\u7968\u5426\u51b3: userScore={}, llmScore={}, uid={}",
+                result.userScore, result.score, userId);
             result.needsHumanReview = true;
             return true;
         }
         return false;
+    }
+
+    /**
+     * 阶段C: 评分窗口关闭前的最终质量定案(解决 P1 时序竞态 —— 用户评分面板在 stage:review 后才展示,
+     * 而 asyncReview 的 HITL 判定可能已完成)。
+     * 在 scheduleScoreWindowClose 真正移除 activeResults 前触发: 若用户已在窗口内打分且为 1-2 星, 强制 needsHumanReview,
+     * 从而使主线程走 HITL 分支并跳过回灌。用户来得再晚也会在窗口关闭时被覆盖。
+     */
+    private void consolidateQuality(String sessionId) {
+        if (sessionId == null) return;
+        AddrfResult result = this.activeResults.get(sessionId);
+        if (result == null) return;
+        if (result.userScore >= 1 && result.userScore <= 2 && !result.needsHumanReview) {
+            result.needsHumanReview = true;
+            logger.warn("[ADDRF-QUALITY] \u8bc4\u5206\u7a97\u53e3\u5173\u95ed\u5b9a\u6848: \u7528\u6237\u4f4e\u5206\u4e00\u7968\u5426\u51b3\u751f\u6548 userScore={}, llmScore={}, sessionId={}",
+                result.userScore, result.score, sessionId);
+        }
+    }
+
+    /**
+     * 阶段C(回灌延后): 评分窗口关闭且最终未被 HITL 阻断时, 将教案回灌个人库供后续检索复用。
+     * 由主线程置 scheduleBackfill+暂存参数, 窗口关闭回调调用(保证用户低分否决能正确阻断入库)。
+     */
+    private void backfillLessonPlan(AddrfResult r) {
+        if (r == null || r.html == null || r.backfillUid == null) {
+            logger.debug("[ADDRF] \u56de\u704c\u672a\u6267\u884c: \u7f3a\u5c11\u56de\u704c\u53c2\u6570(html/uid)");
+            return;
+        }
+        if (this.vectorIndexService == null) {
+            logger.warn("[ADDRF] \u56de\u704c\u8df3\u8fc7: vectorIndexService \u672a\u6ce8\u5165(\u975e Spring \u73af\u5883)");
+            return;
+        }
+        String subject = r.backfillSubject;
+        // 2026-08-19: 回灌分数改为综合分(用户评分参与) — 个人教案库场景用户认可应影响入库与检索门槛
+        int finalScore = this.resolveFeedbackScore(r);
+        this.vectorIndexService.indexLessonPlan(r.html, r.backfillUid, subject, finalScore);
+    }
+
+    /**
+     * 阶段C: 立即按当前质量状态决定是否回灌(评分接口在释放 entry 前调用)。
+     * 好评(>=3星)且未阻断 -> 立即回灌; 低分/已 HITL 阻断 -> 不回灌。
+     * 未评分用户由评分窗口关闭回调(consolidateQuality + backfill)触达。
+     */
+    public void maybeBackfillNow(AddrfResult r) {
+        if (r == null) return;
+        if (r.scheduleBackfill && !r.needsHumanReview) {
+            try {
+                backfillLessonPlan(r);
+            } catch (Exception e) {
+                logger.warn("[ADDRF] \u56de\u704c\u5f02\u5e38(\u4e0d\u5f71\u54cd\u4e3b\u6d41): {}", e.getMessage());
+            }
+        }
     }
 
     private static final Set<String> UNSAFE_KEYWORDS = Set.of(
@@ -895,8 +1088,14 @@ public class AddrfPipeline {
         public volatile int score;
         // volatile: HITL标志位（asyncReview线程设置，LessonController主线程读取）
         public volatile boolean needsHumanReview = false;
+        // 阶段C: 非阻断质量提示(如超长警告), 供前端/日志展示, 不触发人工审核
+        public volatile String qualityNote = null;
         // 2026-08-18: 用户评分(1-5星, 0=未评分)。用户评分线程写入, asyncReview线程读取
         public volatile int userScore = 0;
+        // 阶段C: 回灌延后到评分窗口关闭时定案(用户低分否决能正确阻断入库)。主线程置位并暂存参数。
+        public volatile boolean scheduleBackfill = false;
+        public volatile Long backfillUid = null;
+        public volatile String backfillSubject = null;
 
         public Map<String, String> getStageOutputs() {
             return Map.of("analysis", this.analysis != null ? this.analysis : "", "design", this.design != null ? this.design : "", "development", this.development != null ? this.development : "", "review", this.review != null ? this.review : "");

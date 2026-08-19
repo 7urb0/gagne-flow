@@ -8,7 +8,9 @@ import org.junit.jupiter.api.Test;
 import org.springframework.test.util.ReflectionTestUtils;
 import org.springframework.web.servlet.mvc.method.annotation.SseEmitter;
 
+import java.lang.reflect.Field;
 import java.lang.reflect.Method;
+import java.lang.reflect.Modifier;
 import java.util.Map;
 import java.util.concurrent.ConcurrentHashMap;
 import java.util.concurrent.LinkedBlockingQueue;
@@ -17,6 +19,7 @@ import java.util.concurrent.TimeUnit;
 
 import static org.junit.jupiter.api.Assertions.*;
 import static org.mockito.ArgumentMatchers.any;
+import static org.mockito.ArgumentMatchers.anyInt;
 import static org.mockito.Mockito.mock;
 import static org.mockito.Mockito.never;
 import static org.mockito.Mockito.times;
@@ -339,11 +342,13 @@ class AddrfPipelineTest {
         }
 
         @Test
-        @DisplayName("规则1: Development >5000 字 → true")
+        @DisplayName("规则1(新语义): Development >5000 字 → 仅警告(false), 不再触发 HITL")
         void rule1_longDevelopment_returnsTrue() {
             String longDev = "字".repeat(5001);
             AddrfPipeline.AddrfResult r = makeResult(longDev, 80, null, null);
-            assertTrue(defaultPipeline.shouldRequestHumanReview(r, "数学", 1L));
+            // 阶段C: 超长降级为 info/warn(qualityNote 非空), 不触发人工审核
+            assertFalse(defaultPipeline.shouldRequestHumanReview(r, "数学", 1L));
+            assertNotNull(r.qualityNote, "超长应记录 qualityNote 警告");
         }
 
         @Test
@@ -411,8 +416,10 @@ class AddrfPipelineTest {
             assertFalse(defaultPipeline.shouldRequestHumanReview(r, "数学", 1L));
 
             AddrfPipeline.AddrfResult r2 = makeResult("字".repeat(5001), 80, null, null);
-            assertTrue(defaultPipeline.shouldRequestHumanReview(r2, "数学", 1L));
-            assertTrue(r2.needsHumanReview, "HITL 触发后 needsHumanReview 应为 true");
+            // 阶段C: 超长不再触发 HITL(降级为 only-warn)
+            assertFalse(defaultPipeline.shouldRequestHumanReview(r2, "数学", 1L));
+            assertFalse(r2.needsHumanReview, "超长仅警告, needsHumanReview 应为 false");
+            assertNotNull(r2.qualityNote);
         }
     }
 
@@ -626,6 +633,208 @@ class AddrfPipelineTest {
             }
             emit.invoke(p, emitter, "stage_b", "0123456789"); // stage_b 10 字不 flush
             verify(emitter, times(1)).send(any(SseEmitter.SseEventBuilder.class));
+        }
+    }
+
+    // ============================================================
+    // 评分窗口测试 (2026-08-19 联调 B1 修复: 延迟关闭 activeResults)
+    // ============================================================
+
+    @Nested
+    @DisplayName("评分窗口 activeResults 生命周期")
+    class ScoreWindowTests {
+
+        private static final long SHORT_WINDOW_SECONDS = 1L;
+
+        /** 反射缩短 scoreWindowSeconds 实例字段, 避免测试等待 300s */
+        private void shortenScoreWindow(AddrfPipeline p) throws Exception {
+            Field field = AddrfPipeline.class.getDeclaredField("scoreWindowSeconds");
+            field.setAccessible(true);
+            field.set(p, SHORT_WINDOW_SECONDS);
+        }
+
+        @Test
+        @DisplayName("removeActiveResult 评分成功后立即释放 entry")
+        void removeActiveResult_releasesEntry() {
+            AddrfPipeline p = defaultPipeline;
+            AddrfPipeline.AddrfResult r = new AddrfPipeline.AddrfResult();
+            // 通过 getActiveResult + 反射注入模拟已有注册结果
+            try {
+                Field results = AddrfPipeline.class.getDeclaredField("activeResults");
+                results.setAccessible(true);
+                @SuppressWarnings("unchecked")
+                java.util.Map<String, AddrfPipeline.AddrfResult> map =
+                        (java.util.Map<String, AddrfPipeline.AddrfResult>) results.get(p);
+                map.put("sid_test_1", r);
+                assertEquals(r, p.getActiveResult("sid_test_1"));
+                p.removeActiveResult("sid_test_1");
+                assertNull(p.getActiveResult("sid_test_1"));
+            } catch (Exception e) {
+                fail("反射访问 activeResults 失败: " + e.getMessage());
+            }
+        }
+
+        @Test
+        @DisplayName("removeActiveResult(null) 不抛异常")
+        void removeActiveResult_nullSafe() {
+            assertDoesNotThrow(() -> defaultPipeline.removeActiveResult(null));
+        }
+
+        /**
+         * 阶段C: maybeBackfillNow 决策 —— 好评且未阻断 → 立即回灌; 差评否决/未计划 → 不回灌。
+         * 用 Mockito mock 注入 vectorIndexService 验证调用(解决 review 发现的"评分即 remove 导致回灌丢失"回归)。
+         */
+        private AddrfPipeline newPipelineWithBackfillMock(com.gagneflow.service.vector.VectorIndexService mockVis) {
+            AddrfPipeline p = new AddrfPipeline(null, null, null, null, null, null, null,
+                    new PipelineStageConfig(), null, null, null, null);
+            ReflectionTestUtils.setField(p, "vectorIndexService", mockVis);
+            return p;
+        }
+
+        private AddrfPipeline.AddrfResult makePlannedResult(int llmScore, boolean needsHumanReview) {
+            AddrfPipeline.AddrfResult r = new AddrfPipeline.AddrfResult();
+            r.html = "<html>教案</html>";
+            r.development = "正常内容";
+            r.review = "评审正常";
+            r.score = llmScore;
+            r.scheduleBackfill = true;
+            r.backfillUid = 7L;
+            r.backfillSubject = "数学";
+            r.needsHumanReview = needsHumanReview;
+            return r;
+        }
+
+        @Test
+        @DisplayName("maybeBackfillNow: 好评(>=3星)且未阻断 → 立即回灌")
+        void maybeBackfillNow_goodScore_backfills() {
+            com.gagneflow.service.vector.VectorIndexService mockVis =
+                    org.mockito.Mockito.mock(com.gagneflow.service.vector.VectorIndexService.class);
+            AddrfPipeline p = newPipelineWithBackfillMock(mockVis);
+            AddrfPipeline.AddrfResult r = makePlannedResult(85, false);
+            p.maybeBackfillNow(r);
+            verify(mockVis).indexLessonPlan("<html>教案</html>", 7L, "数学", 85);
+        }
+
+        @Test
+        @DisplayName("maybeBackfillNow: 差评(1-2星→needsHumanReview) → 不回灌(否决)")
+        void maybeBackfillNow_lowScore_notBackfill() {
+            com.gagneflow.service.vector.VectorIndexService mockVis =
+                    org.mockito.Mockito.mock(com.gagneflow.service.vector.VectorIndexService.class);
+            AddrfPipeline p = newPipelineWithBackfillMock(mockVis);
+            AddrfPipeline.AddrfResult r = makePlannedResult(30, true); // userScore<=2 已置 needsHumanReview
+            p.maybeBackfillNow(r);
+            verify(mockVis, never()).indexLessonPlan(any(), any(), any(), anyInt());
+        }
+
+        @Test
+        @DisplayName("maybeBackfillNow: 未计划回灌(scheduleBackfill=false) → 不调用")
+        void maybeBackfillNow_notScheduled_notBackfill() {
+            com.gagneflow.service.vector.VectorIndexService mockVis =
+                    org.mockito.Mockito.mock(com.gagneflow.service.vector.VectorIndexService.class);
+            AddrfPipeline p = newPipelineWithBackfillMock(mockVis);
+            AddrfPipeline.AddrfResult r = makePlannedResult(85, false);
+            r.scheduleBackfill = false;
+            p.maybeBackfillNow(r);
+            verify(mockVis, never()).indexLessonPlan(any(), any(), any(), anyInt());
+        }
+        
+
+        @Test
+        @DisplayName("评分窗口到期后 entry 自动移除(防泄漏)")
+        void scoreWindow_closesAfterDelay() throws Exception {
+            shortenScoreWindow(defaultPipeline);
+            AddrfPipeline p = defaultPipeline;
+            AddrfPipeline.AddrfResult r = new AddrfPipeline.AddrfResult();
+            Field results = AddrfPipeline.class.getDeclaredField("activeResults");
+            results.setAccessible(true);
+            @SuppressWarnings("unchecked")
+            java.util.Map<String, AddrfPipeline.AddrfResult> map =
+                    (java.util.Map<String, AddrfPipeline.AddrfResult>) results.get(p);
+            map.put("sid_window_1", r);
+
+            // 反射调用 private scheduleScoreWindowClose
+            Method m = AddrfPipeline.class.getDeclaredMethod("scheduleScoreWindowClose", String.class);
+            m.setAccessible(true);
+            m.invoke(p, "sid_window_1");
+
+            // 窗口 1s, 等待 2s 后应已移除
+            Thread.sleep((SHORT_WINDOW_SECONDS + 1) * 1000L);
+            assertNull(p.getActiveResult("sid_window_1"), "评分窗口到期后 entry 应自动移除");
+        }
+
+        @Test
+        @DisplayName("scheduleScoreWindowClose(null) 不抛异常")
+        void scheduleWindowClose_nullSafe() throws Exception {
+            shortenScoreWindow(defaultPipeline);
+            Method m = AddrfPipeline.class.getDeclaredMethod("scheduleScoreWindowClose", String.class);
+            m.setAccessible(true);
+            assertDoesNotThrow(() -> m.invoke(defaultPipeline, (String) null));
+        }
+    }
+
+    // ============================================================
+    // resolveFeedbackScore 综合分测试 (2026-08-19 个人教案库反哺综合分)
+    // ============================================================
+    @Nested
+    @DisplayName("resolveFeedbackScore composite score tests")
+    class ResolveFeedbackScoreTests {
+
+        private AddrfPipeline.AddrfResult makeResult(int llmScore, int userScore) {
+            AddrfPipeline.AddrfResult r = new AddrfPipeline.AddrfResult();
+            r.score = llmScore;
+            r.userScore = userScore;
+            return r;
+        }
+
+        @Test
+        @DisplayName("未评分(0)时用 LLM 分兜底")
+        void noUserScore_usesLlm() {
+            assertEquals(90, defaultPipeline.resolveFeedbackScore(makeResult(90, 0)));
+        }
+
+        @Test
+        @DisplayName("低分 1-2 星(阻断路径)兜底用 LLM 分")
+        void lowStar_usesLlm() {
+            assertEquals(90, defaultPipeline.resolveFeedbackScore(makeResult(90, 2)));
+        }
+
+        @Test
+        @DisplayName("5 星 + LLM 90 -> 综合 96 (0.6*100 + 0.4*90)")
+        void fiveStar_highLlm() {
+            assertEquals(96, defaultPipeline.resolveFeedbackScore(makeResult(90, 5)));
+        }
+
+        @Test
+        @DisplayName("3 星 + LLM 90 -> 综合 72 (0.6*60 + 0.4*90)")
+        void threeStar_highLlm() {
+            assertEquals(72, defaultPipeline.resolveFeedbackScore(makeResult(90, 3)));
+        }
+
+        @Test
+        @DisplayName("3 星 + LLM 65 -> 综合 62 (未达标)")
+        void threeStar_lowLlm() {
+            assertEquals(62, defaultPipeline.resolveFeedbackScore(makeResult(65, 3)));
+        }
+
+        @Test
+        @DisplayName("4 星 + LLM 70 -> 综合 76")
+        void fourStar_midLlm() {
+            assertEquals(76, defaultPipeline.resolveFeedbackScore(makeResult(70, 4)));
+        }
+
+        @Test
+        @DisplayName("5 星 + LLM 60 -> 综合 84 (低于检索门槛 85)")
+        void fiveStar_lowLlm_belowRetrievalGate() {
+            assertEquals(84, defaultPipeline.resolveFeedbackScore(makeResult(60, 5)));
+        }
+
+        @Test
+        @DisplayName("自定义权重 0.5: 5 星 + LLM 90 -> 95")
+        void customWeight() {
+            AddrfPipeline p = defaultPipeline;
+            ReflectionTestUtils.setField(p, "feedbackUserWeight", 0.5);
+            assertEquals(95, p.resolveFeedbackScore(makeResult(90, 5)));
+            ReflectionTestUtils.setField(p, "feedbackUserWeight", 0.6);
         }
     }
 }
