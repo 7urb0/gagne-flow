@@ -5,14 +5,22 @@ import com.gagneflow.dto.LessonPlanRequest;
 import org.junit.jupiter.api.DisplayName;
 import org.junit.jupiter.api.Nested;
 import org.junit.jupiter.api.Test;
+import org.springframework.test.util.ReflectionTestUtils;
+import org.springframework.web.servlet.mvc.method.annotation.SseEmitter;
 
 import java.lang.reflect.Method;
 import java.util.Map;
+import java.util.concurrent.ConcurrentHashMap;
 import java.util.concurrent.LinkedBlockingQueue;
 import java.util.concurrent.ThreadPoolExecutor;
 import java.util.concurrent.TimeUnit;
 
 import static org.junit.jupiter.api.Assertions.*;
+import static org.mockito.ArgumentMatchers.any;
+import static org.mockito.Mockito.mock;
+import static org.mockito.Mockito.never;
+import static org.mockito.Mockito.times;
+import static org.mockito.Mockito.verify;
 
 @DisplayName("AddrfPipeline unit tests")
 class AddrfPipelineTest {
@@ -507,6 +515,117 @@ class AddrfPipelineTest {
             String key2 = (String) method.invoke(defaultPipeline, 1L, r2);
 
             assertNotEquals(key1, key2, "不同教学目标应产生不同 cache key");
+        }
+    }
+
+    // ============================================================
+    // emitInterim 节流测试 (2026-08-19 真实验证发现 100ms 时间阈值导致节流失效后补)
+    // ============================================================
+    @Nested
+    @DisplayName("emitInterim throttling tests")
+    class EmitInterimThrottleTests {
+
+        private void resetBuffers(AddrfPipeline p) {
+            ReflectionTestUtils.setField(p, "interimBuffers", new ConcurrentHashMap<String, StringBuilder>());
+            ReflectionTestUtils.setField(p, "interimLastFlush", new ConcurrentHashMap<String, Long>());
+        }
+
+        private Method emitMethod() throws Exception {
+            Method m = AddrfPipeline.class.getDeclaredMethod("emitInterim", SseEmitter.class, String.class, String.class);
+            m.setAccessible(true);
+            return m;
+        }
+
+        private Method flushMethod() throws Exception {
+            Method m = AddrfPipeline.class.getDeclaredMethod("flushInterim", SseEmitter.class, String.class);
+            m.setAccessible(true);
+            return m;
+        }
+
+        @Test
+        @DisplayName("累积不足 50 字不推送(节流生效)")
+        void noFlushUnder50() throws Exception {
+            AddrfPipeline p = defaultPipeline;
+            resetBuffers(p);
+            SseEmitter emitter = mock(SseEmitter.class);
+            Method emit = emitMethod();
+            for (int i = 0; i < 4; i++) {
+                emit.invoke(p, emitter, "test_stage", "0123456789"); // 4x10=40 字
+            }
+            verify(emitter, never()).send(any(SseEmitter.SseEventBuilder.class));
+        }
+
+        @Test
+        @DisplayName("达到 50 字触发一次性批量推送")
+        void flushAt50Chars() throws Exception {
+            AddrfPipeline p = defaultPipeline;
+            resetBuffers(p);
+            SseEmitter emitter = mock(SseEmitter.class);
+            Method emit = emitMethod();
+            for (int i = 0; i < 5; i++) {
+                emit.invoke(p, emitter, "test_stage", "0123456789"); // 5x10=50 字 -> 触发
+            }
+            verify(emitter, times(1)).send(any(SseEmitter.SseEventBuilder.class));
+        }
+
+        @Test
+        @DisplayName("超过 50 字继续累积(第 6 个 chunk 等下一次触发)")
+        void noExtraFlushBeyond50() throws Exception {
+            AddrfPipeline p = defaultPipeline;
+            resetBuffers(p);
+            SseEmitter emitter = mock(SseEmitter.class);
+            Method emit = emitMethod();
+            for (int i = 0; i < 6; i++) {
+                emit.invoke(p, emitter, "test_stage", "0123456789"); // 60 字 -> 50 时 flush 1 次, 剩 10 字
+            }
+            verify(emitter, times(1)).send(any(SseEmitter.SseEventBuilder.class));
+        }
+
+        @Test
+        @DisplayName("阶段完成时 flush 残余(<50 字)")
+        void flushResidualOnComplete() throws Exception {
+            AddrfPipeline p = defaultPipeline;
+            resetBuffers(p);
+            SseEmitter emitter = mock(SseEmitter.class);
+            Method emit = emitMethod();
+            emit.invoke(p, emitter, "test_stage", "残余内容"); // <50 字, 不触发
+            verify(emitter, never()).send(any(SseEmitter.SseEventBuilder.class));
+            Method flush = flushMethod();
+            flush.invoke(p, emitter, "test_stage");
+            verify(emitter, times(1)).send(any(SseEmitter.SseEventBuilder.class));
+        }
+
+        @Test
+        @DisplayName("时间兜底: 距上次 flush 超 500ms 即使 <50 字也推送")
+        void timeFallbackFlush() throws Exception {
+            AddrfPipeline p = defaultPipeline;
+            resetBuffers(p);
+            SseEmitter emitter = mock(SseEmitter.class);
+            Method emit = emitMethod();
+            // 第一次: 触发时间记录
+            for (int i = 0; i < 5; i++) {
+                emit.invoke(p, emitter, "test_stage", "0123456789"); // 50 字 flush
+            }
+            verify(emitter, times(1)).send(any(SseEmitter.SseEventBuilder.class));
+            // 等超过 500ms 兜底阈值
+            Thread.sleep(600L);
+            // 再推 10 字: <50 但超时 -> flush
+            emit.invoke(p, emitter, "test_stage", "0123456789");
+            verify(emitter, times(2)).send(any(SseEmitter.SseEventBuilder.class));
+        }
+
+        @Test
+        @DisplayName("不同 stage 缓冲互相独立")
+        void stagesIndependent() throws Exception {
+            AddrfPipeline p = defaultPipeline;
+            resetBuffers(p);
+            SseEmitter emitter = mock(SseEmitter.class);
+            Method emit = emitMethod();
+            for (int i = 0; i < 5; i++) {
+                emit.invoke(p, emitter, "stage_a", "0123456789"); // stage_a 50 字 flush
+            }
+            emit.invoke(p, emitter, "stage_b", "0123456789"); // stage_b 10 字不 flush
+            verify(emitter, times(1)).send(any(SseEmitter.SseEventBuilder.class));
         }
     }
 }

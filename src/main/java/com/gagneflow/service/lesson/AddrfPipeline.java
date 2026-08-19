@@ -566,7 +566,9 @@ public class AddrfPipeline {
         synchronized (buf) {
             buf.append(chunk);
             long now = System.currentTimeMillis();
-            long last = this.interimLastFlush.getOrDefault(stage, 0L);
+            // 2026-08-19 修复: computeIfAbsent 而非 getOrDefault(0) - 首次调用记录时间但不触发时间条件
+            // (旧实现 now-0 远超 500ms, 第一个 chunk 就立即 flush, 破坏节流)
+            long last = this.interimLastFlush.computeIfAbsent(stage, k -> now);
             flush = buf.length() >= INTERIM_FLUSH_CHARS || (now - last) >= INTERIM_FLUSH_MS;
         }
         if (flush) {
