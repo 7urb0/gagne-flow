@@ -134,55 +134,19 @@ public class VectorIndexService {
             logger.warn("\u6587\u4ef6 {} \u5206\u7247\u540e\u4e3a\u7a7a\uff0c\u8df3\u8fc7\u7d22\u5f15", (Object)filePath);
             return;
         }
-        ArrayList<String> ids = new ArrayList<String>(chunks.size());
-        ArrayList<String> contents = new ArrayList<String>(chunks.size());
-        ArrayList<List<Float>> vectors = new ArrayList<List<Float>>(chunks.size());
-        ArrayList<JsonObject> metadataList = new ArrayList<JsonObject>(chunks.size());
-        String normalizedPath = path.toString().replace(File.separator, "/");
-        for (int i = 0; i < chunks.size(); ++i) {
-            DocumentChunk chunk = chunks.get(i);
-            try {
-                List<Float> vector = this.embeddingService.generateEmbedding(chunk.getContent());
-                Map<String, Object> metadata = this.buildMetadata(normalizedPath, chunk, chunks.size(), docMeta.toMetadataMap(), userId);
-                String id = UUID.nameUUIDFromBytes((normalizedPath + "_" + chunk.getChunkIndex()).getBytes()).toString();
-                ids.add(id);
-                contents.add(chunk.getContent());
-                vectors.add(vector);
-                metadataList.add(this.convertToJsonObject(metadata));
-                logger.debug("\u5206\u7247 {}/{} \u51c6\u5907\u5b8c\u6210", (Object)(i + 1), (Object)chunks.size());
-                continue;
-            }
-            catch (Exception e) {
-                logger.error("\u2717 \u5206\u7247 {}/{} \u51c6\u5907\u5931\u8d25", new Object[]{i + 1, chunks.size(), e});
-                throw new RuntimeException("\u5206\u7247\u51c6\u5907\u5931\u8d25: " + e.getMessage(), e);
-            }
-        }
-        // 修复BUG 1: 先删除旧数据，再插入新数据，避免新数据被同名 _source 条件误删
-        // 2026-08-19 加固: 删除表达式显式带 _user_id, 不依赖路径巧合隔离, 防跨用户误删
-        try {
-            this.deleteExistingData(normalizedPath, userId);
-            logger.info("\u2713 \u5df2\u6e05\u9664\u6587\u4ef6 {} \u7684\u65e7\u7d22\u5f15\u6570\u636e", (Object)normalizedPath);
-        }
-        catch (Exception e) {
-            logger.warn("\u6e05\u9664\u65e7\u6570\u636e\u5931\u8d25\uff08\u53ef\u80fd\u9996\u6b21\u7d22\u5f15\uff09\uff0c\u7ee7\u7eed\u63d2\u5165: {}", (Object)e.getMessage());
-        }
-        try {
-            logger.info("\u5f00\u59cb\u6279\u91cf\u63d2\u5165 {} \u4e2a\u5206\u7247\u5230 Milvus", (Object)chunks.size());
-            long start = System.currentTimeMillis();
-            this.loadCollectionIfNeeded();
-            InsertParam insertParam = InsertParam.newBuilder().withCollectionName("biz").withFields(Arrays.asList(new InsertParam.Field("id", ids), new InsertParam.Field("content", contents), new InsertParam.Field("vector", vectors), new InsertParam.Field("metadata", metadataList))).build();
-            R response = this.milvusClient.insert(insertParam);
-            if (response.getStatus() != 0) {
-                throw new RuntimeException("\u6279\u91cf\u63d2\u5165\u5931\u8d25: " + response.getMessage());
-            }
-            long elapsed = System.currentTimeMillis() - start;
-            logger.info("\u2713 \u6279\u91cf\u63d2\u5165\u6210\u529f: {} \u4e2a\u5206\u7247, \u8017\u65f6 {} ms", (Object)chunks.size(), (Object)elapsed);
-        }
-        catch (Exception e) {
-            logger.error("\u2717 \u6279\u91cf\u63d2\u5165\u5931\u8d25", (Throwable)e);
-            throw new RuntimeException("\u6279\u91cf\u63d2\u5165\u5931\u8d25: " + e.getMessage(), e);
-        }
-        logger.info("\u6587\u4ef6\u7d22\u5f15\u5b8c\u6210: {}, \u5171 {} \u4e2a\u5206\u7247", (Object)filePath, (Object)chunks.size());
+        // 2026-08-19 \u4e8c\u671f: \u62bd\u516c\u5171\u5165\u5e93\u7ba1\u9053 chunkAndIndex
+String normalizedPath = path.toString().replace(File.separator, "/");
+// \u4fee\u590dBUG 1: \u5148\u5220\u9664\u65e7\u6570\u636e(\u663e\u5f0f\u5e26 _user_id \u9694\u79bb), \u518d\u63d2\u5165\u65b0\u6570\u636e
+try {
+    this.deleteExistingData(normalizedPath, userId);
+    logger.info("\u2713 \u5df2\u6e05\u9664\u6587\u4ef6 {} \u7684\u65e7\u7d22\u5f15\u6570\u636e", (Object)normalizedPath);
+}
+catch (Exception e) {
+    logger.warn("\u6e05\u9664\u65e7\u6570\u636e\u5931\u8d25\uff08\u53ef\u80fd\u9996\u6b21\u7d22\u5f15\uff09\uff0c\u7ee7\u7eed\u63d2\u5165: {}", (Object)e.getMessage());
+}
+this.chunkAndIndex(chunks, normalizedPath, "biz", "\u6587\u4ef6",
+        (chunk, total) -> this.buildMetadata(normalizedPath, chunk, total, docMeta.toMetadataMap(), userId));
+logger.info("\u6587\u4ef6\u7d22\u5f15\u5b8c\u6210: {}, \u5171 {} \u4e2a\u5206\u7247", (Object)filePath, (Object)chunks.size());
     }
 
     /**
@@ -236,49 +200,11 @@ public class VectorIndexService {
             logger.info("[回灌跳过] 分片后为空");
             return;
         }
-        // 5. 向量化
-        ArrayList<String> ids = new ArrayList<>(chunks.size());
-        ArrayList<String> contents = new ArrayList<>(chunks.size());
-        ArrayList<List<Float>> vectors = new ArrayList<>(chunks.size());
-        ArrayList<JsonObject> metadataList = new ArrayList<>(chunks.size());
-        for (int i = 0; i < chunks.size(); i++) {
-            DocumentChunk chunk = chunks.get(i);
-            try {
-                List<Float> vector = this.embeddingService.generateEmbedding(chunk.getContent());
-                Map<String, Object> metadata = buildLessonPlanMetadata(userId, subject, score,
-                        chunk, chunks.size());
-                String id = UUID.nameUUIDFromBytes(
-                        (docId + "_" + chunk.getChunkIndex()).getBytes()).toString();
-                ids.add(id);
-                contents.add(chunk.getContent());
-                vectors.add(vector);
-                metadataList.add(this.convertToJsonObject(metadata));
-            } catch (Exception e) {
-                logger.error("[回灌] 分片 {}/{} 准备失败", i + 1, chunks.size(), e);
-                throw new RuntimeException("分片准备失败: " + e.getMessage(), e);
-            }
-        }
-        // 6. 写入 Milvus(2026-08-19: 反哺教案独立到 personal_plans 个人库)
-        try {
-            this.loadCollectionIfNeeded(com.gagneflow.constant.MilvusConstants.PERSONAL_PLANS_COLLECTION);
-            InsertParam insertParam = InsertParam.newBuilder()
-                    .withCollectionName(com.gagneflow.constant.MilvusConstants.PERSONAL_PLANS_COLLECTION)
-                    .withFields(Arrays.asList(
-                            new InsertParam.Field("id", ids),
-                            new InsertParam.Field("content", contents),
-                            new InsertParam.Field("vector", vectors),
-                            new InsertParam.Field("metadata", metadataList)))
-                    .build();
-            R<MutationResult> response = this.milvusClient.insert(insertParam);
-            if (response.getStatus() != 0) {
-                throw new RuntimeException("批量插入失败: " + response.getMessage());
-            }
-            logger.info("[回灌完成] 教案已回灌到知识库: {} 分片, subject={}, score={}, uid={}",
-                    chunks.size(), subject, score, userId);
-        } catch (Exception e) {
-            logger.error("[回灌] 批量插入失败", e);
-            throw new RuntimeException("批量插入失败: " + e.getMessage(), e);
-        }
+        // 5+6. 2026-08-19 二期: 抽公共入库管道 chunkAndIndex(向量化+写入个人库)
+        this.chunkAndIndex(chunks, docId, com.gagneflow.constant.MilvusConstants.PERSONAL_PLANS_COLLECTION, "回灌",
+                (chunk, total) -> buildLessonPlanMetadata(userId, subject, score, chunk, total));
+        logger.info("[回灌完成] 教案已回灌到个人库: {} 分片, subject={}, score={}, uid={}",
+                chunks.size(), subject, score, userId);
     }
 
     /**
@@ -433,6 +359,63 @@ public class VectorIndexService {
             metadata.put("title", chunk.getTitle());
         }
         return metadata;
+    }
+
+    /**
+     * 2026-08-19 二期: 公共入库管道 - 分片向量化 + 批量写入 Milvus。
+     * 上传文档(indexSingleFile)与教案反哺(indexLessonPlan)共用此方法,
+     * 差异(collection 名 + metadata 构建)通过参数化注入, 未来新增数据源零改动。
+     */
+    @FunctionalInterface
+    interface ChunkMetadataBuilder {
+        Map<String, Object> build(DocumentChunk chunk, int totalChunks);
+    }
+
+    private void chunkAndIndex(List<DocumentChunk> chunks, String docIdPrefix,
+                               String collectionName, String logTag,
+                               ChunkMetadataBuilder metadataBuilder) {
+        ArrayList<String> ids = new ArrayList<>(chunks.size());
+        ArrayList<String> contents = new ArrayList<>(chunks.size());
+        ArrayList<List<Float>> vectors = new ArrayList<>(chunks.size());
+        ArrayList<JsonObject> metadataList = new ArrayList<>(chunks.size());
+        for (int i = 0; i < chunks.size(); i++) {
+            DocumentChunk chunk = chunks.get(i);
+            try {
+                List<Float> vector = this.embeddingService.generateEmbedding(chunk.getContent());
+                Map<String, Object> metadata = metadataBuilder.build(chunk, chunks.size());
+                String id = UUID.nameUUIDFromBytes(
+                        (docIdPrefix + "_" + chunk.getChunkIndex()).getBytes()).toString();
+                ids.add(id);
+                contents.add(chunk.getContent());
+                vectors.add(vector);
+                metadataList.add(this.convertToJsonObject(metadata));
+            } catch (Exception e) {
+                logger.error("{} 分片 {}/{} 准备失败", logTag, i + 1, chunks.size(), e);
+                throw new RuntimeException("分片准备失败: " + e.getMessage(), e);
+            }
+        }
+        try {
+            logger.info("开始批量插入 {} 个分片到 {} ({})", chunks.size(), collectionName, logTag);
+            long start = System.currentTimeMillis();
+            this.loadCollectionIfNeeded(collectionName);
+            InsertParam insertParam = InsertParam.newBuilder()
+                    .withCollectionName(collectionName)
+                    .withFields(Arrays.asList(
+                            new InsertParam.Field("id", ids),
+                            new InsertParam.Field("content", contents),
+                            new InsertParam.Field("vector", vectors),
+                            new InsertParam.Field("metadata", metadataList)))
+                    .build();
+            R<MutationResult> response = this.milvusClient.insert(insertParam);
+            if (response.getStatus() != 0) {
+                throw new RuntimeException("批量插入失败: " + response.getMessage());
+            }
+            long elapsed = System.currentTimeMillis() - start;
+            logger.info("✓ 批量插入成功({}): {} 个分片, 耗时 {} ms", logTag, chunks.size(), elapsed);
+        } catch (Exception e) {
+            logger.error("✗ 批量插入失败({})", logTag, e);
+            throw new RuntimeException("批量插入失败: " + e.getMessage(), e);
+        }
     }
 
     // Gson 是 Milvus Java SDK 的传递依赖，InsertParam.Field 的 metadata 参数接受 com.google.gson.JsonObject 类型
