@@ -1,0 +1,31 @@
+# 前端工程忽略规则（2026-08-19 新增，防止 node_modules/dist 污染版本库）
+# 注：根 .gitignore 的 /dist/ 只匹配根目录，不覆盖 frontend/dist，这里单独管理。
+
+# 依赖
+node_modules/
+
+# 构建产物
+dist/
+build/
+
+# TypeScript 增量编译缓存
+*.tsbuildinfo
+
+# Vite/tsc 中间产物（源仅在 vite.config.ts，.js/.d.ts/timestamp 由构建再生）
+vite.config.js
+vite.config.d.ts
+vite.config.js.timestamp-*
+vite.config.ts.timestamp-*
+
+# 本地日志/缓存
+*.log
+_*.log
+.npm-cache/
+.eslintcache
+
+# 编辑器/系统
+.DS_Store
+Thumbs.db
+.idea/
+.vscode/*
+!.vscode/extensions.json

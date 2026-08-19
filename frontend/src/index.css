@@ -1,0 +1,283 @@
+@tailwind base;
+@tailwind components;
+@tailwind utilities;
+
+@layer base {
+  :root {
+    /* shadcn/ui 标准 zinc 色板 (通用中性配色, 浅色主题) */
+    --background: 0 0% 100%;
+    --foreground: 240 10% 3.9%;
+    --card: 0 0% 100%;
+    --card-foreground: 240 10% 3.9%;
+    --popover: 0 0% 100%;
+    --popover-foreground: 240 10% 3.9%;
+    --primary: 240 5.9% 10%;
+    --primary-foreground: 0 0% 98%;
+    --secondary: 240 4.8% 95.9%;
+    --secondary-foreground: 240 5.9% 10%;
+    --muted: 240 4.8% 95.9%;
+    --muted-foreground: 240 3.8% 46.1%;
+    --accent: 240 4.8% 95.9%;
+    --accent-foreground: 240 5.9% 10%;
+    --destructive: 0 72.2% 50.6%;
+    --destructive-foreground: 0 0% 98%;
+    --border: 240 5.9% 90%;
+    --input: 240 5.9% 90%;
+    --ring: 240 5.9% 10%;
+    --radius: 0.5rem;
+
+    /* 侧边栏 (浅色) */
+    --sidebar: 0 0% 98%;
+    --sidebar-foreground: 240 5.3% 26.1%;
+    --sidebar-primary: 240 5.9% 10%;
+    --sidebar-primary-foreground: 0 0% 98%;
+    --sidebar-accent: 240 4.8% 95.9%;
+    --sidebar-accent-foreground: 240 5.9% 10%;
+    --sidebar-border: 220 13% 91%;
+    --sidebar-ring: 240 5.9% 10%;
+
+    /* highlight.js github 主题适配 */
+    --hljs-bg: #f6f8fa;
+    --hljs-fg: #24292e;
+  }
+
+  .dark {
+    --background: 240 10% 3.9%;
+    --foreground: 0 0% 98%;
+    --card: 240 10% 3.9%;
+    --card-foreground: 0 0% 98%;
+    --popover: 240 10% 3.9%;
+    --popover-foreground: 0 0% 98%;
+    --primary: 0 0% 98%;
+    --primary-foreground: 240 5.9% 10%;
+    --secondary: 240 3.7% 15.9%;
+    --secondary-foreground: 0 0% 98%;
+    --muted: 240 3.7% 15.9%;
+    --muted-foreground: 240 5% 64.9%;
+    --accent: 240 3.7% 15.9%;
+    --accent-foreground: 0 0% 98%;
+    --destructive: 0 62.8% 30.6%;
+    --destructive-foreground: 0 0% 98%;
+    --border: 240 3.7% 15.9%;
+    --input: 240 3.7% 15.9%;
+    --ring: 240 4.9% 83.9%;
+    --sidebar: 240 5.9% 10%;
+    --sidebar-foreground: 240 4.8% 95.9%;
+    --sidebar-primary: 0 0% 98%;
+    --sidebar-primary-foreground: 240 5.9% 10%;
+    --sidebar-accent: 240 3.7% 15.9%;
+    --sidebar-accent-foreground: 240 4.8% 95.9%;
+    --sidebar-border: 240 3.7% 15.9%;
+    --sidebar-ring: 240 4.9% 83.9%;
+  }
+
+  * {
+    @apply border-border;
+  }
+
+  html,
+  body,
+  #root {
+    height: 100%;
+  }
+
+  body {
+    @apply bg-background text-foreground font-sans antialiased;
+    overflow: hidden;
+  }
+
+  ::-webkit-scrollbar {
+    width: 6px;
+    height: 6px;
+  }
+  ::-webkit-scrollbar-track {
+    background: transparent;
+  }
+  ::-webkit-scrollbar-thumb {
+    background: hsl(var(--border));
+    border-radius: 3px;
+  }
+  ::-webkit-scrollbar-thumb:hover {
+    background: hsl(var(--muted-foreground) / 0.5);
+  }
+}
+
+@layer components {
+  /* 教案 HTML 渲染容器 (DOMPurify 消毒后注入, scoped 避免污染全局) */
+  .lesson-html {
+    line-height: 1.8;
+    font-size: 14px;
+    color: hsl(var(--foreground));
+    word-break: break-word;
+  }
+  .lesson-html h1 {
+    font-size: 1.6em;
+    font-weight: 700;
+    margin: 1.2em 0 0.6em;
+    padding-bottom: 0.3em;
+    border-bottom: 1px solid hsl(var(--border));
+  }
+  .lesson-html h2 {
+    font-size: 1.35em;
+    font-weight: 700;
+    margin: 1.4em 0 0.5em;
+    padding-bottom: 0.25em;
+    border-bottom: 1px solid hsl(var(--border));
+  }
+  .lesson-html h3 {
+    font-size: 1.15em;
+    font-weight: 600;
+    margin: 1.2em 0 0.4em;
+  }
+  .lesson-html p {
+    margin: 0.5em 0;
+  }
+  .lesson-html ul,
+  .lesson-html ol {
+    padding-left: 1.6em;
+    margin: 0.5em 0;
+  }
+  .lesson-html li {
+    margin: 0.2em 0;
+  }
+  .lesson-html table {
+    width: 100%;
+    border-collapse: collapse;
+    margin: 0.8em 0;
+  }
+  .lesson-html th,
+  .lesson-html td {
+    border: 1px solid hsl(var(--border));
+    padding: 6px 10px;
+  }
+  .lesson-html th {
+    background: hsl(var(--muted));
+    font-weight: 600;
+  }
+  .lesson-html blockquote {
+    border-left: 3px solid hsl(var(--muted-foreground) / 0.5);
+    padding-left: 12px;
+    color: hsl(var(--muted-foreground));
+    margin: 0.6em 0;
+  }
+  .lesson-html code {
+    font-family: var(--font-mono);
+    font-size: 0.9em;
+    background: hsl(var(--muted));
+    padding: 1px 5px;
+    border-radius: 4px;
+  }
+  .lesson-html pre {
+    background: var(--hljs-bg);
+    padding: 12px 14px;
+    border-radius: 8px;
+    overflow-x: auto;
+    margin: 0.8em 0;
+  }
+  .lesson-html pre code {
+    background: none;
+    padding: 0;
+    color: var(--hljs-fg);
+  }
+  .lesson-html img {
+    max-width: 100%;
+  }
+  .lesson-html .hitl-warning {
+    font-size: 13px;
+    border: 2px solid hsl(var(--destructive) / 0.7);
+    padding: 12px;
+    margin: 12px 0;
+    background: hsl(var(--destructive) / 0.06);
+    border-radius: 8px;
+    color: hsl(var(--destructive));
+  }
+  .lesson-html a {
+    color: hsl(var(--foreground));
+    text-decoration: underline;
+  }
+
+  /* 聊天气泡 markdown */
+  .chat-md {
+    line-height: 1.65;
+  }
+  .chat-md p {
+    margin: 0 0 8px;
+  }
+  .chat-md p:last-child {
+    margin-bottom: 0;
+  }
+  .chat-md ul,
+  .chat-md ol {
+    padding-left: 18px;
+    margin: 4px 0;
+  }
+  .chat-md h1,
+  .chat-md h2,
+  .chat-md h3,
+  .chat-md h4 {
+    font-weight: 600;
+    margin: 10px 0 6px;
+  }
+  .chat-md pre {
+    background: #1e293b;
+    color: #e2e8f0;
+    padding: 10px 12px;
+    border-radius: 8px;
+    overflow-x: auto;
+    margin: 8px 0;
+    font-size: 13px;
+  }
+  .chat-md code {
+    font-family: var(--font-mono);
+    font-size: 0.9em;
+  }
+  .chat-md :not(pre) > code {
+    background: hsl(var(--muted));
+    padding: 1px 5px;
+    border-radius: 4px;
+  }
+  .chat-md blockquote {
+    border-left: 3px solid hsl(var(--muted-foreground) / 0.5);
+    padding-left: 10px;
+    color: hsl(var(--muted-foreground));
+    margin: 6px 0;
+  }
+  .chat-md table {
+    border-collapse: collapse;
+    margin: 8px 0;
+    display: block;
+    overflow-x: auto;
+  }
+  .chat-md th,
+  .chat-md td {
+    border: 1px solid hsl(var(--border));
+    padding: 5px 9px;
+  }
+
+  /* 消息进入动画 (Vercel AI Chatbot 风格) */
+  .message-animation {
+    animation: message-in 0.25s cubic-bezier(0.22, 1, 0.36, 1);
+  }
+  @keyframes message-in {
+    from {
+      opacity: 0;
+      transform: translateY(8px);
+    }
+    to {
+      opacity: 1;
+      transform: translateY(0);
+    }
+  }
+
+  /* 输入框容器 (composer 风格) */
+  .composer {
+    box-shadow:
+      0 1px 2px hsl(0 0% 0% / 0.04),
+      0 0 0 1px hsl(0 0% 0% / 0.06);
+  }
+  .composer:focus-within {
+    box-shadow:
+      0 0 0 1px hsl(0 0% 0% / 0.08),
+      0 2px 8px -2px hsl(0 0% 0% / 0.06);
+  }
+}
