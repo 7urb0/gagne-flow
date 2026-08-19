@@ -53,6 +53,8 @@ gagneflow:
     # Analysis 前置意图理解 + 澄清问题(2026-08-18 一期): 建议式推送不阻塞
     analysis-clarify-enabled: ${ADDRF_CLARIFY_ENABLED:true}
     max-clarify-questions: 3
+    # 2026-08-19 二期: 澄清等待用户回答的窗口(秒), 超时降级不阻塞
+    clarify-wait-seconds: ${ADDRF_CLARIFY_WAIT_SECONDS:45}
     # Analysis 结果缓存 TTL(小时), 1h -> 6h 减少重复 LLM 调用
     analysis-cache-ttl-hours: ${ADDRF_ANALYSIS_CACHE_TTL_HOURS:6}
   pipeline:

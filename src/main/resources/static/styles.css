@@ -612,6 +612,20 @@ a { text-decoration: none; color: inherit; }
 }
 .us-submit:disabled { opacity: 0.5; cursor: not-allowed; }
 
+/* 2026-08-19: 意图澄清回答面板(二期) */
+.clarify-panel { margin-top: 6px; }
+.clarify-panel h3 { margin-bottom: var(--space-2); }
+.clarify-input-row { display: flex; gap: var(--space-2); margin-top: var(--space-2); }
+.clarify-input {
+    flex: 1; padding: var(--space-1) var(--space-2); border: 1px solid var(--border);
+    border-radius: var(--radius-md); font-size: var(--font-xs); background: var(--background);
+}
+.clarify-submit {
+    padding: var(--space-1) var(--space-3); border: 1px solid var(--primary);
+    border-radius: var(--radius-md); background: var(--primary); color: #fff;
+    font-size: var(--font-xs); cursor: pointer;
+}
+
 /* ============================================================
    Progress Modal (教案生成进度弹窗)
    ============================================================ */

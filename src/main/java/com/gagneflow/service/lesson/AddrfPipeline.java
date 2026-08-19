@@ -61,6 +61,7 @@ public class AddrfPipeline {
     private final SubjectFormatLoader subjectFormatLoader;
     private final PipelineStageConfig stageConfig;
     private final PersonalizationContextService personalizationService;
+    private final com.gagneflow.service.memory.ConversationMemoryManager memoryManager;
     private final ThreadPoolExecutor executor;
     private final StringRedisTemplate redisTemplate;
     private volatile CompletableFuture<Void> reviewFuture;
@@ -75,6 +76,9 @@ public class AddrfPipeline {
     private boolean analysisClarifyEnabled;
     @org.springframework.beans.factory.annotation.Value("${gagneflow.addrf.max-clarify-questions:3}")
     private int maxClarifyQuestions;
+    // 2026-08-19: 澄清等待用户回答的窗口(秒), 超时降级不阻塞
+    @org.springframework.beans.factory.annotation.Value("${gagneflow.addrf.clarify-wait-seconds:45}")
+    private long clarifyWaitSeconds = 45L;
     // 2026-08-18: Analysis 缓存 TTL(小时), 由 1h 延长至 6h 减少重复调用
     @org.springframework.beans.factory.annotation.Value("${gagneflow.addrf.analysis-cache-ttl-hours:6}")
     private int analysisCacheTtlHours;
@@ -92,6 +96,7 @@ public class AddrfPipeline {
                          K12CurriculumLoader k12Loader, FormatTool formatTool,
                          SubjectFormatLoader subjectFormatLoader, PipelineStageConfig stageConfig,
                          PersonalizationContextService personalizationService,
+                         com.gagneflow.service.memory.ConversationMemoryManager memoryManager,
                          StringRedisTemplate redisTemplate,
                          @Autowired(required=false) ThreadPoolExecutor executor) {
         this.promptLoader = promptLoader;
@@ -103,6 +108,7 @@ public class AddrfPipeline {
         this.subjectFormatLoader = subjectFormatLoader;
         this.stageConfig = stageConfig;
         this.personalizationService = personalizationService;
+        this.memoryManager = memoryManager;
         this.redisTemplate = redisTemplate;
         this.executor = executor != null ? executor : AddrfPipeline.createDefaultExecutor();
         // P3修复: 启动时校验并输出配置的阶段顺序
@@ -158,7 +164,7 @@ public class AddrfPipeline {
                 } else {
                     String analysisPrompt = this.loadPrompt("addrf_analysis", userId);
                     // 2026-08-18: Analysis 前置意图理解 + 澄清问题(一期, 建议式不阻塞)
-                    String clarifiedInput = this.runAnalysisClarify(chatModel, initialInput, emitter, userId, request.getSubject());
+                    String clarifiedInput = this.runAnalysisClarify(chatModel, initialInput, emitter, userId, sessionId, copilotQueues, request.getSubject());
                     result.analysis = this.callStageWithRevise(chatModel, analysisPrompt, clarifiedInput, emitter, "analysis", mode, copilotQueues, 60, request.getSubject());
                     if (TERMINATED.equals(result.analysis)) {
                         result.analysis = "[\u7528\u6237\u7ec8\u6b62]";
@@ -314,7 +320,9 @@ public class AddrfPipeline {
      * 返回合并了意图摘要的输入(供正式 Analysis 使用); 任何异常回退为原始输入。
      */
     private String runAnalysisClarify(ChatModelPort chatModel, String userInput, SseEmitter emitter,
-                                      Long userId, String subject) {
+                                      Long userId, String sessionId,
+                                      ConcurrentHashMap<String, BlockingQueue<String>> copilotQueues,
+                                      String subject) {
         if (!this.analysisClarifyEnabled) {
             return userInput;
         }
@@ -335,22 +343,49 @@ public class AddrfPipeline {
             }
             String intentSummary = extractIntentSection(intentOutput, "意图摘要");
             String questions = extractIntentSection(intentOutput, "澄清问题");
-            // 建议式推送: 有具体澄清问题才推(不阻塞, 用户可答可不答)
+            // 建议式推送 + 等待用户回答(二期 2026-08-19): 限时等待, 超时降级不阻塞
+            String clarifiedInput = userInput;
+            String token = null;
             if (questions != null && !questions.isBlank()
                     && !questions.contains("无需澄清") && emitter != null) {
                 try {
+                    // 1. 生成 token 并放入 copilotQueues(复用现有交互机制)
+                    token = "clarify_" + java.util.UUID.randomUUID().toString().substring(0, 8);
+                    java.util.concurrent.BlockingQueue<String> queue = new java.util.concurrent.LinkedBlockingQueue<>(1);
+                    copilotQueues.put(token, queue);
+                    // 2. 推送问题 + token(前端提交回答用)
                     emitter.send(SseEmitter.event().name("message")
-                            .data(java.util.Map.of("type", "analysis_clarify", "questions", questions)));
-                    logger.info("[ADDRF] Analysis 澄清问题已推送: {}", questions.length());
+                            .data(java.util.Map.of("type", "analysis_clarify", "questions", questions, "token", token)));
+                    logger.info("[ADDRF] Analysis 澄清问题已推送(等待回答): {}", questions.length());
+                    // 3. 限时等待用户回答(默认 45s, 可配)
+                    String answer = queue.poll(this.clarifyWaitSeconds, java.util.concurrent.TimeUnit.SECONDS);
+                    if (answer != null && !answer.isBlank()) {
+                        clarifiedInput = userInput + "\n\n[用户回答澄清问题]: " + answer.trim();
+                        logger.info("[ADDRF] 收到澄清回答({} 字), 已合并进分析输入", answer.trim().length());
+                        // 4. 回答写入 LTM(USER_EXPLICIT) -> 下次生成自动复用, 越问越少
+                        if (this.memoryManager != null) {
+                            try {
+                                this.memoryManager.storeUserPreference(userId, sessionId, "消息偏好", answer.trim());
+                            } catch (Exception ltmEx) {
+                                logger.debug("[ADDRF] 澄清回答写入 LTM 失败: {}", ltmEx.getMessage());
+                            }
+                        }
+                    } else {
+                        logger.debug("[ADDRF] 澄清等待超时(＜{}s), 用原始输入继续", this.clarifyWaitSeconds);
+                    }
                 } catch (Exception e) {
-                    logger.trace("[ADDRF] 澄清问题推送失败 (emitter 可能已关闭): {}", e.getMessage());
+                    logger.trace("[ADDRF] 澄清等待失败 (emitter 可能已关闭): {}", e.getMessage());
+                } finally {
+                    if (token != null) {
+                        copilotQueues.remove(token);
+                    }
                 }
             }
             // 意图摘要合并进输入, 供正式 Analysis 参考
             if (intentSummary != null && !intentSummary.isBlank()) {
-                return userInput + "\n\n[意图理解摘要(仅供分析参考)]: " + intentSummary;
+                return clarifiedInput + "\n\n[意图理解摘要(仅供分析参考)]: " + intentSummary;
             }
-            return userInput;
+            return clarifiedInput;
         } catch (Exception e) {
             logger.warn("[ADDRF] 意图理解失败, 回退原始输入: {}", e.getMessage());
             return userInput;

@@ -44,7 +44,7 @@ class AddrfPipelineOrchestrationTest {
         PersonalizationContextService pcs = mock(PersonalizationContextService.class);
         when(pcs.getContext(any(), any(), any())).thenReturn("");
         return new AddrfPipeline(null, null, null, null, null, mockFormatTool(), mockSfl(),
-                new PipelineStageConfig(), pcs, null, null);
+                new PipelineStageConfig(), pcs, null, null, null);
     }
 
     private LessonPlanRequest newRequest() {
@@ -103,7 +103,7 @@ class AddrfPipelineOrchestrationTest {
         when(ops.get(anyString())).thenReturn("cached analysis");
 
         AddrfPipeline pipeline = new AddrfPipeline(null, null, null, null, null, mockFormatTool(), mockSfl(),
-                new PipelineStageConfig(), mock(PersonalizationContextService.class), redis, null);
+                new PipelineStageConfig(), mock(PersonalizationContextService.class), null, redis, null);
         ChatModelPort port = mock(ChatModelPort.class);
         when(port.stream(any(Prompt.class)))
                 .thenAnswer(inv -> Flux.just(text("stage output")));

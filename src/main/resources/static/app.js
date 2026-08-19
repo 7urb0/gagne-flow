@@ -1024,12 +1024,36 @@ class GagneFlowApp {
                         }
                     }
                     else if (m.type === 'analysis_clarify') {
-                        // Analysis 意图澄清(2026-08-18): 建议式展示问题, 不阻塞生成
+                        // Analysis 意图澄清(二期 2026-08-19): 展示问题 + 可回答输入框(45s 窗口内提交有效)
                         const qs = (m.questions || '').replace(/^[-*]\s*/gm, '· ');
-                        this.addLessonMessage('assistant',
-                            `### 🔍 生成前小确认（可选，不回答也能继续）\n\n` +
+                        const panel = document.createElement('div'); panel.className = 'clarify-panel';
+                        panel.innerHTML =
+                            `### 🔍 生成前小确认（可选，45秒内回答会融入生成）\n\n` +
                             qs.split('\n').filter(l => l.trim()).map(l => `> ${l.trim()}`).join('\n\n') +
-                            `\n\n_你可以直接在对话中补充这些信息，或跳过继续生成。_`);
+                            `<div class="clarify-input-row">
+                                <input type="text" class="clarify-input" placeholder="快速回答（如：计算偏弱 / 讲练结合 / 重难点是分数意义）" maxlength="300">
+                                <button class="clarify-submit">提交</button>
+                            </div>
+                            <div class="clarify-skip" style="font-size:12px;color:var(--text-muted);margin-top:6px;">不回答也能继续生成</div>`;
+                        const input = panel.querySelector('.clarify-input');
+                        const submit = panel.querySelector('.clarify-submit');
+                        submit.addEventListener('click', async () => {
+                            const answer = input.value.trim();
+                            if (!answer) return;
+                            try {
+                                await this.apiFetch(this.apiBase + '/lesson_plan/clarify', {
+                                    method: 'POST', headers: { 'Content-Type': 'application/json' },
+                                    body: JSON.stringify({ token: m.token, answer })
+                                });
+                                panel.querySelector('.clarify-input-row').style.display = 'none';
+                                panel.querySelector('.clarify-skip').textContent = '✓ 已收到你的回答，正在融入生成';
+                            } catch (e) {
+                                this.showToast('回答提交失败（可能已超时）', 'error');
+                                panel.querySelector('.clarify-input-row').style.display = 'none';
+                            }
+                        });
+                        const bubble = this.addLessonMessage('assistant', '');
+                        bubble.querySelector('.message-bubble').appendChild(panel);
                     }
                     else if (m.type === 'stage_await') {
                         // Copilot 分步确认：展示阶段内容 + 等待用户确认（三按钮：继续/修改/停止）

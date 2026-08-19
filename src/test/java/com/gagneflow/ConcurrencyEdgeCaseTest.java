@@ -317,7 +317,7 @@ class ConcurrencyEdgeCaseTest {
     private static com.gagneflow.service.lesson.AddrfPipeline newPipeline() {
         return new com.gagneflow.service.lesson.AddrfPipeline(
                 null, null, null, null, null, null, null,
-                new com.gagneflow.config.PipelineStageConfig(), null, null, null);
+                new com.gagneflow.config.PipelineStageConfig(), null, null, null, null);
     }
 
     @Nested

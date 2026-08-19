@@ -130,4 +130,38 @@ class LessonControllerTest {
         assertEquals(200, resp.getStatusCodeValue());
         assertEquals(2, result.userScore);
     }
+
+    // ============================================================
+    // 澄清回答接口 (2026-08-19 意图澄清二期)
+    // ============================================================
+
+    @Test
+    void lessonPlanClarify_missingFields_badRequest() {
+        LessonController c = newController();
+        assertEquals(400, c.lessonPlanClarify(Map.of("token", "t1")).getStatusCodeValue());
+        assertEquals(400, c.lessonPlanClarify(Map.of("answer", "计算偏弱")).getStatusCodeValue());
+        assertEquals(400, c.lessonPlanClarify(Map.of("token", "t1", "answer", "  ")).getStatusCodeValue());
+    }
+
+    @Test
+    void lessonPlanClarify_tokenNotFound_404() {
+        LessonController c = newController();
+        ConcurrentHashMap<String, BlockingQueue<String>> queues = new ConcurrentHashMap<>();
+        ReflectionTestUtils.setField(c, "copilotQueues", queues);
+        assertEquals(404, c.lessonPlanClarify(Map.of("token", "missing", "answer", "abc"))
+                .getStatusCodeValue());
+    }
+
+    @Test
+    void lessonPlanClarify_validAnswer_offersQueue() throws Exception {
+        LessonController c = newController();
+        BlockingQueue<String> q = new LinkedBlockingQueue<>(1);
+        ConcurrentHashMap<String, BlockingQueue<String>> queues = new ConcurrentHashMap<>();
+        queues.put("clarify_abc123", q);
+        ReflectionTestUtils.setField(c, "copilotQueues", queues);
+        ResponseEntity<?> resp = c.lessonPlanClarify(
+                Map.of("token", "clarify_abc123", "answer", "班级计算偏弱，希望讲练结合"));
+        assertEquals(200, resp.getStatusCodeValue());
+        assertEquals("班级计算偏弱，希望讲练结合", q.poll());
+    }
 }

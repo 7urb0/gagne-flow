@@ -382,6 +382,26 @@ public class LessonController {
     }
 
     /**
+     * 2026-08-19: 用户提交意图澄清回答(token + answer)。
+     * 后端在 Analysis 前置澄清的限时等待窗口内消费该回答, 合并进分析输入。
+     */
+    @PostMapping(value = {"/lesson_plan/clarify"})
+    public ResponseEntity<?> lessonPlanClarify(@RequestBody Map<String, String> body) {
+        String token = body.get("token");
+        String answer = body.get("answer");
+        if (token == null || answer == null || answer.trim().isEmpty()) {
+            return ResponseEntity.badRequest().body(Map.of("error", "token and answer required"));
+        }
+        BlockingQueue<String> queue = this.copilotQueues.get(token);
+        if (queue == null) {
+            return ResponseEntity.status(404).body(Map.of("error", "clarify token not found or expired"));
+        }
+        queue.offer(answer.trim());
+        logger.info("[ADDRF] 收到澄清回答: token={}, len={}", token, answer.trim().length());
+        return ResponseEntity.ok(Map.of("ok", true));
+    }
+
+    /**
      * P1修复: 摘要替换一致性 — 先删 MySQL 再更新 Redis，避免状态分裂
      */
     private void tryTriggerSummary(Long userId, String sessionId) {
