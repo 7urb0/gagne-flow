@@ -151,9 +151,11 @@ public class ChatController {
                     } catch (IOException e) {
                         logger.warn("SSE error event send failed (client likely disconnected)");
                     }
+                    heartbeatExecutor.shutdownNow(); // 2026-08-19 修复: 流错误时也关闭心跳
                     emitter.completeWithError((Throwable) error);
                 }, () -> {
                     try {
+                        heartbeatExecutor.shutdownNow(); // 2026-08-19 修复: 流完成时关闭心跳(原 finally 立即关导致心跳从未生效)
                         String fullAnswer = fullAnswerBuilder.toString();
                         this.chatSessionService.saveMessage(uid, request.getId(), "user", request.getQuestion());
                         this.chatSessionService.saveMessage(uid, request.getId(), "assistant", fullAnswer);
@@ -170,6 +172,7 @@ public class ChatController {
                 this.sendAndComplete(emitter, SseMessage.error(
                         e.getMessage() != null ? e.getMessage() : "未知错误"));
             } finally {
+                // 2026-08-19: 心跳已在 onComplete/onError 中关闭; 此处兜底防泄漏(正常路径回调已关, 幂等)
                 heartbeatExecutor.shutdownNow();
             }
         });

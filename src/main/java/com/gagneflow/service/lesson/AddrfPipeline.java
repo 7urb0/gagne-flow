@@ -64,6 +64,9 @@ public class AddrfPipeline {
     private final com.gagneflow.service.memory.ConversationMemoryManager memoryManager;
     private final ThreadPoolExecutor executor;
     private final StringRedisTemplate redisTemplate;
+    // 2026-08-19 修复: 单例 future 多用户并发互相覆盖 -> 按 sessionId 隔离
+    private final ConcurrentHashMap<String, CompletableFuture<Void>> reviewFutures = new ConcurrentHashMap<>();
+    @Deprecated
     private volatile CompletableFuture<Void> reviewFuture;
     static final String CO_TERMINATE = "terminate";
     private static final String REVISE_PREFIX = "revise:";
@@ -258,7 +261,7 @@ public class AddrfPipeline {
             result.development = "\uff08\u6b64\u90e8\u5206\u5f85\u8865\u5145\uff09\n\n> **\u26a0 \u8be5\u9636\u6bb5\u751f\u6210\u8d85\u65f6\u6216\u5931\u8d25\uff0c\u4ec5\u5c55\u793a\u5df2\u751f\u6210\u7684\u5206\u6790\u4e0e\u8bbe\u8ba1\u5185\u5bb9\u3002\u53ef\u5c1d\u8bd5\u51cf\u5c11\u8bfe\u65f6\u6570\u540e\u91cd\u65b0\u751f\u6210\u3002**";
         }
         result.html = this.formatTool.format(result.analysis, result.design, result.development, "");
-        this.emitStageComplete(emitter, "stage:format", result.html);
+        this.emitStageComplete(emitter, "stage:format", result.html, sessionId);
         if (!devDegraded && result.development != null && !result.development.startsWith(DEGRADED_PREFIX)) {
             String finalK12 = k12Ctx;
             String finalSubject = request.getSubject();
@@ -279,13 +282,22 @@ public class AddrfPipeline {
                 }
                 try {
                     result.html = this.formatTool.format(result.analysis, result.design, result.development, result.review);
-                    emitter.send(SseEmitter.event().name("message").data(Map.of("type", "stage:format", "content", result.html, "stage", "format", "updated", true)));
+                    emitter.send(SseEmitter.event().name("message").data(Map.of("type", "stage:format", "content", result.html, "stage", "format", "updated", true, "sessionId", sessionId)));
                 }
                 catch (Exception e) {
                     logger.warn("[ADDRF] Review 更新 HTML 推送失败 (emitter 可能已关闭): {}", e.getMessage());
                 }
                 this.emitStageComplete(emitter, "stage:review", result.review);
+                // 2026-08-19 修复: 正常路径也移除注册表(原仅在降级分支移除 -> 每份教案泄漏一个 entry)
+                if (sessionId != null) {
+                    this.activeResults.remove(sessionId);
+                }
             }, this.executor);
+            // 2026-08-19 修复: 按 sessionId 存 future(消除多用户并发覆盖), 完成后移除
+            if (sessionId != null) {
+                this.reviewFutures.put(sessionId, reviewTask);
+                reviewTask.whenComplete((v, t) -> this.reviewFutures.remove(sessionId));
+            }
             this.reviewFuture = reviewTask;
         } else {
             result.review = "[\u7cfb\u7edf\u63d0\u793a: \u6559\u6848\u4e3b\u4f53\u4e0d\u5b8c\u6574\uff0c\u8df3\u8fc7\u8bc4\u4f30]";
@@ -298,14 +310,26 @@ public class AddrfPipeline {
         return result;
     }
 
+    public void awaitReview(AddrfResult result, long timeoutSeconds) {
+        // 兼容旧签名: 无 sessionId 时降级用单例(向后兼容, 不推荐)
+        this.awaitReview(result, timeoutSeconds, null);
+    }
+
     /**
      * Wait for the background Review task to complete.
-     * Fixes F05: ensures Review async SSE pushes happen before main flow sends "done".
+     * 2026-08-19 修复: 按 sessionId 取对应 future, 消除多用户并发互相覆盖竞态。
      */
-    public void awaitReview(AddrfResult result, long timeoutSeconds) {
-        if (this.reviewFuture != null) {
+    public void awaitReview(AddrfResult result, long timeoutSeconds, String sessionId) {
+        CompletableFuture<Void> future = null;
+        if (sessionId != null) {
+            future = this.reviewFutures.get(sessionId);
+        }
+        if (future == null) {
+            future = this.reviewFuture; // 旧单例兜底
+        }
+        if (future != null) {
             try {
-                this.reviewFuture.get(timeoutSeconds, TimeUnit.SECONDS);
+                future.get(timeoutSeconds, TimeUnit.SECONDS);
             } catch (TimeoutException e) {
                 logger.warn("[ADDRF] Review background task timed out after {}s", timeoutSeconds);
             } catch (Exception e) {
@@ -486,62 +510,81 @@ public class AddrfPipeline {
     }
 
     private String callAgent(ChatModelPort chatModel, String systemPrompt, String userInput, SseEmitter emitter, String stage, String mode, int timeoutSec, String subject) {
+        // 2026-08-19 优化: 去掉 executor.submit 嵌套(每阶段只占 1 线程, 不再编排线程等 worker 空转)
+        // 超时控制改为 Flux.timeout 操作符, 同线程流式 + 超时
         int maxTokens = this.resolveMaxTokens(stage, subject);
-        Future<String> future = this.executor.submit(() -> {
+        try {
+            Prompt prompt = new Prompt(List.of(new SystemMessage(systemPrompt), new UserMessage(userInput)), (ChatOptions)DashScopeChatOptions.builder().withMaxToken(Integer.valueOf(maxTokens)).build());
+            StringBuilder full = new StringBuilder();
+            Flux<ChatResponse> flux = chatModel.stream(prompt);
+            flux.timeout(java.time.Duration.ofSeconds(timeoutSec)).doOnNext(response -> {
+                String chunk;
+                if (response != null && response.getResult() != null && (chunk = response.getResult().getOutput().getText()) != null) {
+                    full.append(chunk);
+                    this.emitInterim(emitter, stage, chunk);
+                }
+            }).blockLast();
+            return full.toString();
+        }
+        catch (Exception e) {
+            // 超时/流异常 -> 降级 call()
+            if (e instanceof java.util.concurrent.TimeoutException) {
+                logger.warn("[ADDRF] {} \u8d85\u65f6({}s), \u964d\u7ea7 call()", (Object)stage, (Object)timeoutSec);
+            } else {
+                logger.warn("[ADDRF] {} stream() \u964d\u7ea7 call(): {}", (Object)stage, (Object)e.getMessage());
+            }
             try {
                 Prompt prompt = new Prompt(List.of(new SystemMessage(systemPrompt), new UserMessage(userInput)), (ChatOptions)DashScopeChatOptions.builder().withMaxToken(Integer.valueOf(maxTokens)).build());
-                StringBuilder full = new StringBuilder();
-                Flux<ChatResponse> flux = chatModel.stream(prompt);
-                flux.doOnNext(response -> {
-                    String chunk;
-                    if (response != null && response.getResult() != null && (chunk = response.getResult().getOutput().getText()) != null) {
-                        full.append(chunk);
-                        this.emitInterim(emitter, stage, chunk);
-                    }
-                }).blockLast();
-                return full.toString();
-            }
-            catch (Exception e) {
-                logger.warn("[ADDRF] {} stream() \u964d\u7ea7 call(): {}", (Object)stage, (Object)e.getMessage());
-                try {
-                    Prompt prompt = new Prompt(List.of(new SystemMessage(systemPrompt), new UserMessage(userInput)), (ChatOptions)DashScopeChatOptions.builder().withMaxToken(Integer.valueOf(maxTokens)).build());
-                    ChatResponse response2 = chatModel.call(prompt);
-                    if (response2 != null && response2.getResult() != null) {
-                        AssistantMessage msg = response2.getResult().getOutput();
-                        return msg != null ? msg.getText() : "";
-                    }
+                ChatResponse response2 = chatModel.call(prompt);
+                if (response2 != null && response2.getResult() != null) {
+                    AssistantMessage msg = response2.getResult().getOutput();
+                    return msg != null ? msg.getText() : "";
                 }
-                catch (Exception e2) {
-                    logger.warn("[ADDRF] {} stream() 降级 call() 也失败: {}", stage, e2.getMessage());
-                }
-                return "";
             }
-        });
-        try {
-            return future.get(timeoutSec, TimeUnit.SECONDS);
-        }
-        catch (TimeoutException e) {
-            future.cancel(true);
-            logger.warn("[ADDRF] {} \u8d85\u65f6({}s)", (Object)stage, (Object)timeoutSec);
-            return null;
-        }
-        catch (ExecutionException e) {
-            logger.error("[ADDRF] {} \u5f02\u5e38", (Object)stage, (Object)e.getCause());
-            return null;
-        }
-        catch (InterruptedException e) {
-            Thread.currentThread().interrupt();
-            future.cancel(true);
-            return null;
+            catch (Exception e2) {
+                logger.warn("[ADDRF] {} stream() \u964d\u7ea7 call() \u4e5f\u5931\u8d25: {}", stage, e2.getMessage());
+            }
+            return "";
         }
     }
+
+    // 2026-08-19: 节流缓冲 - 按 stage 累积, 达 50 字或 100ms 才推送(改善前端观感, 减少 SSE 消息数)
+    private final java.util.concurrent.ConcurrentHashMap<String, StringBuilder> interimBuffers = new java.util.concurrent.ConcurrentHashMap<>();
+    private final java.util.concurrent.ConcurrentHashMap<String, Long> interimLastFlush = new java.util.concurrent.ConcurrentHashMap<>();
+    private static final int INTERIM_FLUSH_CHARS = 50;
+    private static final long INTERIM_FLUSH_MS = 100L;
 
     private void emitInterim(SseEmitter emitter, String stage, String chunk) {
         if (emitter == null || chunk == null || chunk.isEmpty()) {
             return;
         }
+        // 节流累积
+        StringBuilder buf = this.interimBuffers.computeIfAbsent(stage, k -> new StringBuilder());
+        boolean flush;
+        synchronized (buf) {
+            buf.append(chunk);
+            long now = System.currentTimeMillis();
+            long last = this.interimLastFlush.getOrDefault(stage, 0L);
+            flush = buf.length() >= INTERIM_FLUSH_CHARS || (now - last) >= INTERIM_FLUSH_MS;
+        }
+        if (flush) {
+            flushInterim(emitter, stage);
+        }
+    }
+
+    /** 推送缓冲内容并重置 */
+    private void flushInterim(SseEmitter emitter, String stage) {
+        StringBuilder buf = this.interimBuffers.get(stage);
+        if (buf == null) return;
+        String batch;
+        synchronized (buf) {
+            if (buf.length() == 0) return;
+            batch = buf.toString();
+            buf.setLength(0);
+            this.interimLastFlush.put(stage, System.currentTimeMillis());
+        }
         try {
-            emitter.send(SseEmitter.event().name("message").data(Map.of("type", "stage:content", "stage", stage, "chunk", chunk)));
+            emitter.send(SseEmitter.event().name("message").data(Map.of("type", "stage:content", "stage", stage, "chunk", batch)));
         }
         catch (IOException | IllegalStateException e) {
             logger.trace("[ADDRF] 临时块推送失败 (emitter 可能已关闭): {}", e.getMessage());
@@ -549,13 +592,34 @@ public class AddrfPipeline {
     }
 
     private void emitStageComplete(SseEmitter emitter, String eventType, String content) {
+        this.emitStageComplete(emitter, eventType, content, null);
+    }
+
+    /**
+     * B1 前端重构配合: stage:format 事件附带真实教案 sessionId, 供前端评分/PDF 使用。
+     * 新增字段不破坏既有契约 (旧前端忽略未知字段)。
+     */
+    private void emitStageComplete(SseEmitter emitter, String eventType, String content, String sessionId) {
         if (emitter == null) {
             return;
+        }
+        // 2026-08-19: 阶段完成前先 flush 节流缓冲的残余内容(避免 <50 字的内容滞留)
+        try {
+            String flushStage = eventType.replace("stage:", "");
+            this.flushInterim(emitter, flushStage);
+        } catch (Exception ignored) {
         }
         try {
             String stage = eventType.replace("stage:", "");
             String safe = content != null ? content.substring(0, Math.min(content.length(), 500)) : "";
-            emitter.send(SseEmitter.event().name("message").data(Map.of("type", eventType, "content", safe, "stage", stage)));
+            LinkedHashMap<String, Object> data = new LinkedHashMap<>();
+            data.put("type", eventType);
+            data.put("content", safe);
+            data.put("stage", stage);
+            if (sessionId != null) {
+                data.put("sessionId", sessionId);
+            }
+            emitter.send(SseEmitter.event().name("message").data(data));
         }
         catch (IOException | IllegalStateException e) {
             logger.trace("[ADDRF] 阶段完成推送失败 (emitter 可能已关闭): {}", e.getMessage());

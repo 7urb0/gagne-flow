@@ -150,9 +150,10 @@ public class LessonController {
     private boolean tryRedisLock(String lockKey) {
         try {
             // H-10修复: 增加 TTL 适配 ADDRF 完整流程（异步 Review 240s×2 + 生成时间）
+            // 2026-08-19: 600s -> 900s(最坏 Design240+Dev240+Review240=720s, 留余量防锁提前过期)
             return Boolean.TRUE.equals(
                     this.stringRedisTemplate.opsForValue()
-                            .setIfAbsent(lockKey, "1", Duration.ofSeconds(600L)));
+                            .setIfAbsent(lockKey, "1", Duration.ofSeconds(900L)));
         } catch (Exception e) {
             logger.warn("Redis 不可用，降级为 JVM 锁: {}", e.getMessage());
             return false;
@@ -175,7 +176,7 @@ public class LessonController {
                     req, new DashScopeChatModelPort(model), emitter, req.getMode(), this.copilotQueues, sessionCtx, uid, sid);
             String html = result.html != null ? result.html : "<p>生成失败</p>";
             // 等待 Review 后台线程完成，拿到真实评分与 HITL 标志（score 由 asyncReview 异步写入）
-            this.addrfPipeline.awaitReview(result, 240);
+            this.addrfPipeline.awaitReview(result, 240, sid);
             // HITL: 教案质量人工审核（必须在 awaitReview 之后判断，否则 score/needsHumanReview 尚未就绪）
             if (result.needsHumanReview) {
                 String hitlMsg = "\u26a0 \u7cfb\u7edf\u68c0\u6d4b\u5230\u8be5\u6559\u6848\u53ef\u80fd\u5b58\u5728\u8d28\u91cf\u95ee\u9898\uff08\u8bc4\u5206: "
