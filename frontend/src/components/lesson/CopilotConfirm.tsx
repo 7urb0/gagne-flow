@@ -63,8 +63,11 @@ export function CopilotConfirm({
     <div className="my-2 rounded-xl border border-primary/30 bg-primary/5 p-4">
       <div className="mb-2 flex items-center gap-2 text-sm font-semibold">
         <CheckCircle2 className="h-4 w-4 text-primary" />
-        {label}阶段完成 — 请选择操作
+        {label}阶段已完成 — 请确认是否继续
       </div>
+      <p className="mb-2 text-xs leading-relaxed text-muted-foreground">
+        请确认本阶段内容；确认无误请点「确认继续」，需要调整请点「修改后继续」。等待您确认后再进入下一步。
+      </p>
       {preview && (
         <p className="mb-2 line-clamp-3 text-xs leading-relaxed text-muted-foreground">
           {preview}

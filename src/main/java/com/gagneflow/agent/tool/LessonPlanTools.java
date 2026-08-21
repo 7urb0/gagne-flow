@@ -29,8 +29,10 @@ import org.springframework.stereotype.Component;
 public class LessonPlanTools {
     private static final Logger logger = LoggerFactory.getLogger(LessonPlanTools.class);
     public static final String TOOL_GET_LATEST_LESSON_PLAN = "getLatestLessonPlan";
-    /** Redis 教案长驻存档 key 前缀 */
+    /** Redis 教案长驻存档 key 前缀（最新一份，供 getLatestLessonPlan 工具检索） */
     public static final String REDIS_KEY_PREFIX = "gagneflow:lesson:latest:";
+    /** Redis 教案按 sid 维度存档 key 前缀（供 PDF 下载按会话取回，与对话存储完全隔离） */
+    public static final String REDIS_PLAN_KEY_PREFIX = "gagneflow:lesson:plan:";
     /** 教案 HTML 判定前缀（与 LessonController PDF 下载过滤条件一致） */
     public static final String HTML_PREFIX = "<!DOCTYPE html>";
     /** 教案 PDF 下载路径前缀 */
@@ -102,6 +104,44 @@ public class LessonPlanTools {
                     userId, sessionId, this.archiveTtlDays);
         } catch (Exception e) {
             logger.warn("[教案存档] Redis 写入失败(不影响主流程): {}", e.getMessage());
+        }
+    }
+
+    /**
+     * 将教案 HTML 按 sessionId 维度独立存档（与对话存储物理隔离），
+     * 供 PDF 下载接口按会话精确取回。TTL 同长驻存档。
+     */
+    public void archiveLessonPlan(Long userId, String sessionId, String html) {
+        try {
+            if (userId == null || sessionId == null || sessionId.isEmpty()
+                    || html == null || html.isEmpty()) {
+                return;
+            }
+            this.stringRedisTemplate.opsForValue()
+                    .set(REDIS_PLAN_KEY_PREFIX + userId + ":" + sessionId, html,
+                            Duration.ofDays(this.archiveTtlDays));
+            logger.debug("[教案存档] 已按 sid 写入 Redis: uid={}, sessionId={}, ttl={}天",
+                    userId, sessionId, this.archiveTtlDays);
+        } catch (Exception e) {
+            logger.warn("[教案存档] 按 sid Redis 写入失败(不影响主流程): {}", e.getMessage());
+        }
+    }
+
+    /**
+     * 按 sessionId 从独立教案存档取回 HTML（供 PDF 下载）。
+     * 仅读取 gagneflow:lesson:plan:{uid}:{sid}，绝不触碰对话会话存储。
+     */
+    public String getLessonPlanHtml(Long userId, String sessionId) {
+        try {
+            if (this.stringRedisTemplate == null || userId == null
+                    || sessionId == null || sessionId.isEmpty()) {
+                return null;
+            }
+            return this.stringRedisTemplate.opsForValue()
+                    .get(REDIS_PLAN_KEY_PREFIX + userId + ":" + sessionId);
+        } catch (Exception e) {
+            logger.warn("[教案存档] 按 sid Redis 读取失败: {}", e.getMessage());
+            return null;
         }
     }
 

@@ -22,8 +22,6 @@ import com.gagneflow.config.security.CurrentUser;
 import com.gagneflow.constant.UserConstants;
 import com.gagneflow.dto.LessonPlanRequest;
 import com.gagneflow.dto.SseMessage;
-import com.gagneflow.entity.SessionMessage;
-import com.gagneflow.service.chat.ChatService;
 import com.gagneflow.service.chat.ChatSession;
 import com.gagneflow.service.chat.ChatSessionService;
 import com.gagneflow.service.document.SubjectFormatLoader;
@@ -31,7 +29,6 @@ import com.gagneflow.service.lesson.AddrfPipeline;
 import com.gagneflow.service.lesson.DashScopeChatModelPort;
 import com.gagneflow.service.lesson.FormatTool;
 import com.gagneflow.service.memory.ConversationMemoryManager;
-import com.gagneflow.service.memory.TokenCounter;
 import com.gagneflow.service.metrics.PipelineMetrics;
 import com.gagneflow.service.pdf.PdfGenerator;
 import com.gagneflow.service.vector.VectorIndexService;
@@ -39,6 +36,7 @@ import jakarta.validation.Valid;
 import org.slf4j.Logger;
 import org.slf4j.LoggerFactory;
 import org.springframework.beans.factory.annotation.Autowired;
+import org.springframework.beans.factory.annotation.Value;
 import org.springframework.data.redis.core.StringRedisTemplate;
 import org.springframework.http.MediaType;
 import org.springframework.http.ResponseEntity;
@@ -64,8 +62,6 @@ public class LessonController {
     @Autowired
     private AddrfPipeline addrfPipeline;
     @Autowired
-    private ChatService chatService;
-    @Autowired
     private LessonPlanTools lessonPlanTools;
     @Autowired
     private ChatSessionService chatSessionService;
@@ -75,8 +71,6 @@ public class LessonController {
     private StringRedisTemplate stringRedisTemplate;
     @Autowired
     private PdfGenerator pdfGenerator;
-    @Autowired(required = false)
-    private TokenCounter tokenCounter;
     @Autowired(required = false)
     private SubjectFormatLoader subjectFormatLoader;
     @Autowired(required = false)
@@ -92,6 +86,9 @@ public class LessonController {
     private final ConcurrentHashMap<String, BlockingQueue<String>> copilotQueues = new ConcurrentHashMap<>();
     // P1修复: SSE 完成状态保护，防止重复 complete
     private final AtomicBoolean emitterCompleted = new AtomicBoolean(false);
+    /** 教案存档保留天数(与 LessonPlanTools.archiveTtlDays 对齐)，用于 PDF 404 提示 */
+    @Value("${gagneflow.lesson.archive-ttl-days:7}")
+    private long lessonArchiveTtlDays = 7L;
 
     private Long resolveUserId(Long userId, String sessionId) {
         return UserConstants.resolveUserId(userId, sessionId);
@@ -191,28 +188,28 @@ public class LessonController {
                     this.pipelineMetrics.recordHitlTrigger(req.getSubject(), uid);
                 }
             } else {
-                // 非 HITL: 教案质量达标，回灌到知识库供后续检索（此时 score 为 Review 真实评分）
+                // 非 HITL: 教案质量达标 -> 计划回灌(阶段C: 延后到评分窗口关闭时执行,
+                // 以便用户低分否决能在窗口内正确阻断入库; 该用户待窗口关闭由 backfillLessonPlan 实际入库)
                 try {
-                    this.vectorIndexService.indexLessonPlan(html, uid, req.getSubject(), result.score);
+                    result.scheduleBackfill = true;
+                    result.backfillUid = uid;
+                    result.backfillSubject = req.getSubject();
+                    logger.info("[ADDRF] 教案待回灌(评分窗关闭时入库): score={}, subject={}, uid={}, sid={}",
+                        result.score, req.getSubject(), uid, sid);
                 } catch (Exception e) {
-                    logger.warn("[ADDRF] 教案回灌失败（不影响主流程）: {}", e.getMessage());
+                    logger.warn("[ADDRF] 教案回灌计划失败（不影响主流程）: {}", e.getMessage());
                 }
             }
             String summary = this.extractLessonSummary(result);
-            this.chatSessionService.addMessage(uid, sid,
-                    req.getStage() + " " + req.getGrade() + "年级 " + req.getSubject(), summary);
+            // 教案会话与对话会话彻底隔离: 不再写入共享 ChatSession(无 SessionMeta/无 SessionMessage/无对话摘要)
             try {
-                this.chatSessionService.registerSession(uid, sid,
-                        req.getStage() + " " + req.getGrade() + "年级 " + req.getSubject() + " 教案");
-                this.chatSessionService.saveMessage(uid, sid, "user",
-                        req.getStage() + " " + req.getGrade() + "年级 " + req.getSubject());
-                this.chatSessionService.saveMessage(uid, sid, "assistant", html);
-                // 教案长驻存档(Redis 7天): 供对话 agent 通过 getLatestLessonPlan 检索最近教案
+                // 1) 独立按 sid 存档: 供 PDF 下载精确取回
+                this.lessonPlanTools.archiveLessonPlan(uid, sid, html);
+                // 2) 长驻最新一份存档: 供对话 agent 通过 getLatestLessonPlan 检索最近教案
                 this.lessonPlanTools.archiveLatestLessonPlan(uid, sid, html);
-            } catch (Exception mysqlEx) {
-                logger.error("MySQL 教案持久化失败 (Redis 已写入): {}", mysqlEx.getMessage());
+            } catch (Exception archiveEx) {
+                logger.error("教案 Redis 存档失败: {}", archiveEx.getMessage());
             }
-            this.tryTriggerSummary(uid, sid);
             this.sendAndComplete(emitter, SseMessage.done());
         } catch (Exception e) {
             logger.error("ADDRF lesson plan failed: {}", e.getMessage(), e);
@@ -307,15 +304,11 @@ public class LessonController {
     public ResponseEntity<?> downloadLessonPlanPdf(
             @PathVariable String sessionId, @CurrentUser Long userId) {
         Long uid = resolveUserId(userId, sessionId);
-        List<SessionMessage> msgs = this.chatSessionService.getSessionMessages(uid, sessionId);
-        String html = msgs.stream()
-                .filter(m -> "assistant".equals(m.getRole())
-                        && m.getContent() != null
-                        && m.getContent().startsWith("<!DOCTYPE html>"))
-                .map(SessionMessage::getContent)
-                .reduce((first, second) -> second).orElse(null);
-        if (html == null) {
-            return ResponseEntity.notFound().build();
+        // 从独立的教案存档按 sid 取回 HTML（与对话会话存储隔离）
+        String html = this.lessonPlanTools.getLessonPlanHtml(uid, sessionId);
+        if (html == null || html.isEmpty()) {
+            return ResponseEntity.status(404)
+                    .body(Map.of("error", "未找到该教案存档（可能已过期，存档保留 " + this.lessonArchiveTtlDays + " 天）"));
         }
         try {
             byte[] pdf = this.pdfGenerator.htmlToPdf(html);
@@ -379,6 +372,21 @@ public class LessonController {
         String feedback = body.getOrDefault("feedback", "");
         logger.info("[ADDRF] 用户评分: sessionId={}, score={}, feedback={}",
                 sessionId, userScore, feedback.isEmpty() ? "(无)" : feedback);
+        // 阶段C修复: 评分即定案——好评(>=3星)且未阻断则立即回灌, 差评(1-2星)否决回灌并标记人工审核,
+        // 然后才释放 entry(避免'评分即remove'导致评过分的教案(含好评)永不回灌, 也保证低分不入库)。
+        // 2026-08-21: 用户显式高分保留(>=4星)可覆盖"质量类"人工审核否决(让个人库可反哺);
+        // 但"安全类"否决(危险关键词, needsSafetyReview)不可被覆盖 —— 这是合规红线。
+        if (userScore >= 1 && userScore <= 2) {
+            result.needsHumanReview = true;
+        }
+        if (userScore >= 4) {
+            result.needsHumanReview = false;
+            logger.info("[ADDRF] 用户高分保留覆盖质量门控: sessionId={}, userScore={}, llmScore={}, safetyBlocked={}",
+                sessionId, userScore, result.score, result.needsSafetyReview);
+        }
+        this.addrfPipeline.maybeBackfillNow(result);
+        // 2026-08-19 联调修复: 评分成功即关闭评分窗口, 释放 activeResults entry
+        this.addrfPipeline.removeActiveResult(sessionId);
         return ResponseEntity.ok(Map.of("ok", true, "userScore", userScore));
     }
 
@@ -400,81 +408,6 @@ public class LessonController {
         queue.offer(answer.trim());
         logger.info("[ADDRF] 收到澄清回答: token={}, len={}", token, answer.trim().length());
         return ResponseEntity.ok(Map.of("ok", true));
-    }
-
-    /**
-     * P1修复: 摘要替换一致性 — 先删 MySQL 再更新 Redis，避免状态分裂
-     */
-    private void tryTriggerSummary(Long userId, String sessionId) {
-        ChatSession session = this.chatSessionService.getRaw(userId, sessionId);
-        if (session == null) return;
-        int pairCount = session.getMessagePairCount();
-        if (pairCount <= 5) return;
-        int since = pairCount - session.getLastSummaryPairCount();
-        if (since < 3) return;
-        try {
-            List<Map<String, String>> full = session.getMessageHistory();
-            int sumPairs = Math.min(session.getLastSummaryPairCount() + 3, pairCount);
-            int sumCount = sumPairs * 2;
-            if (full.size() < sumCount) return;
-            ArrayList<Map<String, String>> toSummarize =
-                    new ArrayList<>(full.subList(0, sumCount));
-            ArrayList<Map<String, String>> remaining =
-                    new ArrayList<>(full.subList(sumCount, full.size()));
-            String summary = this.chatService.generateConversationSummary(toSummarize);
-            if (summary == null || summary.trim().isEmpty()) return;
-            if (summary.length() > 600) {
-                logger.warn("摘要过长({}字)，截断至500字: {}", summary.length(), sessionId);
-                summary = com.gagneflow.service.chat.ChatService.truncateAtSentenceBoundary(summary, 500);
-            }
-            if (this.tokenCounter != null) {
-                int origTokens = this.tokenCounter.estimate(
-                        toSummarize.stream().map(m -> m.getOrDefault("content", ""))
-                                .reduce("", String::concat));
-                int summaryTokens = this.tokenCounter.estimate(summary);
-                double ratio = (double) summaryTokens / (double) Math.max(origTokens, 1);
-                logger.info("摘要压缩比: {}/{} tokens = {:.1%}", summaryTokens, origTokens, ratio);
-                if (ratio > 0.5) {
-                    logger.warn("摘要压缩比过高({:.1%})，跳过本次摘要: {}", ratio, sessionId);
-                    return;
-                }
-            }
-            ArrayList<Map<String, String>> newHistory = new ArrayList<>();
-            HashMap<String, String> sm = new HashMap<>();
-            sm.put("role", "system");
-            sm.put("content", "[历史对话摘要] " + summary);
-            newHistory.add(sm);
-            newHistory.addAll(remaining);
-            // Step 1: 先删 MySQL 旧消息（失败则跳过，避免数据不一致）
-            List<SessionMessage> msgs = this.chatSessionService.getSessionMessages(userId, sessionId);
-            int deleteCount = Math.min(sumCount, msgs.size());
-            if (deleteCount > 0) {
-                try {
-                    this.chatSessionService.deleteMessages(msgs.subList(0, deleteCount));
-                } catch (Exception e) {
-                    logger.warn("MySQL 旧消息清理失败，跳过本次摘要以保证数据一致性: {}", e.getMessage());
-                    return;
-                }
-            }
-            // Step 2: 再更新 Redis (乐观锁保证并发安全)
-            this.chatSessionService.replaceHistory(userId, sessionId, newHistory, summary, sumPairs);
-            ChatSession updated = this.chatSessionService.getRaw(userId, sessionId);
-            if (this.tokenCounter != null && updated != null) {
-                updated.setTotalTokens(this.tokenCounter.estimate(updated.buildFullText()));
-                this.chatSessionService.saveRaw(userId, sessionId, updated);
-            }
-            this.memoryManager.onSummaryGenerated(userId, sessionId, summary);
-            if (this.pipelineMetrics != null && this.tokenCounter != null) {
-                int origTokens = this.tokenCounter.estimate(
-                        toSummarize.stream().map(m -> m.getOrDefault("content", ""))
-                                .reduce("", String::concat));
-                int sumTokens = this.tokenCounter.estimate(summary);
-                this.pipelineMetrics.recordSummaryCompression(sessionId, origTokens, sumTokens,
-                        (double) sumTokens / (double) Math.max(origTokens, 1));
-            }
-        } catch (Exception e) {
-            logger.error("对话总结失败: {}", sessionId, e);
-        }
     }
 
     private void sendAndComplete(SseEmitter emitter, SseMessage msg) {

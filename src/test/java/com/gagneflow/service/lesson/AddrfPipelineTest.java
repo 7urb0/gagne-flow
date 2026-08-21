@@ -96,6 +96,49 @@ class AddrfPipelineTest {
         assertEquals(0, defaultPipeline.extractScore("<html><body>502 Bad Gateway</body></html>"));
     }
 
+    @Test
+    @DisplayName("extractScore anchors to SCORE_JSON block over stray body 'score:' (P4 fix)")
+    void extractScore_AnchorsToScoreJsonOverStrayBodyScore() {
+        // 正文里出现 "score: 65", 但末尾 SCORE_JSON 锚点是 85 -> 必须取锚点值, 否则会误匹配正文
+        String review = "综合评级良好, score: 65\n\n### 修改建议\n1. 增加互动\n\n"
+            + "SCORE_JSON: {\"score\": 85, \"dimensions\": {\"clarity\": 17, \"accuracy\": 16, \"strategy\": 17, \"alignment\": 17, \"format\": 18}}";
+        assertEquals(85, defaultPipeline.extractScore(review));
+    }
+
+    @Test
+    @DisplayName("extractScore parses real addrf_review SCORE_JSON format")
+    void extractScore_RealReviewFormat_ReturnsParsedScore() {
+        String review = "## 质量评估报告\n\n### 评分\n总分: 78/100\n\n### 修改建议\n1. x\n\n"
+            + "SCORE_JSON: {\"score\": 78, \"dimensions\": {\"clarity\": 15, \"accuracy\": 16, \"strategy\": 15, \"alignment\": 16, \"format\": 16}}";
+        assertEquals(78, defaultPipeline.extractScore(review));
+    }
+
+    @Test
+    @DisplayName("extractDimensions parses 5 dims from SCORE_JSON")
+    void extractDimensions_FromJson_ReturnsFiveDims() {
+        String review = "SCORE_JSON: {\"score\": 80, \"dimensions\": {\"clarity\": 18, \"accuracy\": 17, \"strategy\": 16, \"alignment\": 15, \"format\": 14}}";
+        Map<String, Integer> dims = defaultPipeline.extractDimensions(review);
+        assertEquals(5, dims.size());
+        assertEquals(18, dims.get("clarity"));
+        assertEquals(14, dims.get("format"));
+    }
+
+    @Test
+    @DisplayName("extractDimensions falls back to Chinese X/20 table when JSON missing")
+    void extractDimensions_ChineseTableFallback() {
+        String review = "目标清晰度: 15/20\n内容准确性: 16/20\n策略合理性: 14/20\n课标对齐度: 17/20\n格式规范度: 18/20";
+        Map<String, Integer> dims = defaultPipeline.extractDimensions(review);
+        assertEquals(5, dims.size());
+        assertEquals(15, dims.get("clarity"));
+        assertEquals(18, dims.get("format"));
+    }
+
+    @Test
+    @DisplayName("extractDimensions returns empty map when no score data")
+    void extractDimensions_Empty_WhenNoData() {
+        assertTrue(defaultPipeline.extractDimensions("没有任何评分信息").isEmpty());
+    }
+
     // ============================================================
     // extractFeedback tests
     // ============================================================

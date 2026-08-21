@@ -70,7 +70,9 @@ export function ClarifyPanel({ questions, token }: { questions: string; token: s
               {submitting ? '提交中' : '提交'}
             </Button>
           </div>
-          <p className="mt-1.5 text-[11px] text-muted-foreground">不回答也能继续生成</p>
+          <p className="mt-1.5 text-[11px] text-muted-foreground">
+            请确认您的回答，或选择跳过（45 秒内未回答将自动继续生成）
+          </p>
         </>
       )}
     </div>

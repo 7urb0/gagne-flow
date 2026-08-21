@@ -1,9 +1,10 @@
 import { useMemo, useState } from 'react';
-import { Download, Edit3, FileText, ListOrdered, Pencil, Save, X } from 'lucide-react';
+import { AlertTriangle, Download, Edit3, FileText, ListOrdered, Pencil, Save, X } from 'lucide-react';
 import { toast } from 'sonner';
 import { Button } from '@/components/ui/button';
 import { downloadPdf } from '@/api/lesson';
 import type { LessonResultItem } from '@/store/lesson';
+import { useLessonStore } from '@/store/lesson';
 import { sanitizeLessonHtml } from '@/lib/lessonHtml';
 import { parseScore, parseScoreLenient } from '@/lib/score';
 import { QualityScore } from '@/components/lesson/QualityScore';
@@ -89,6 +90,16 @@ export function Workbench({
     return parseScoreLenient(result.reviewText) ?? parseScore(result.reviewText);
   }, [result.reviewText]);
 
+  // 2026-08-21: HITL 人工复核确认闸门 —— 后端将质量警告注入 html(hitl-warning),
+  // 分数不达标但用户显式"保留并使用"时, 允许保留(个人库), 但不可进入共享知识库。
+  const needsHumanReview = useMemo(
+    () => result.html.includes('hitl-warning'),
+    [result.html],
+  );
+  const kept = useLessonStore((s) => s.keepDecided[result.sessionId] ?? false);
+  const setKeepDecided = useLessonStore((s) => s.setKeepDecided);
+  const removeResult = useLessonStore((s) => s.removeResult);
+
   const outline = useMemo(
     () => sections.map((s, i) => ({ id: s.id, title: s.title, index: i + 1 })),
     [sections],
@@ -110,14 +121,16 @@ export function Workbench({
       toast.warning('内容不能为空');
       return;
     }
-    setSections((prev) =>
-      prev.map((s) =>
-        s.id === sec.id ? { ...s, html: `<p>${escapeHtml(text).replace(/\n/g, '<br>')}</p>` } : s,
-      ),
+    const next = sections.map((s) =>
+      s.id === sec.id ? { ...s, html: `<p>${escapeHtml(text).replace(/\n/g, '<br>')}</p>` } : s,
     );
+    setSections(next);
+    // 持久化到 store 的该教案 html, 切换多份结果后再次打开仍保留编辑(L1 不丢)
+    const newHtml = next.map((s) => s.html).join('');
+    useLessonStore.getState().updateResultHtml(result.sessionId, newHtml);
     setEditingId(null);
     toast.success('已保存到本地预览', {
-      description: '当前仅本地预览，不会回写服务器',
+      description: '本地预览已更新（不回写服务器），切换教案后仍在',
     });
   };
 
@@ -185,12 +198,43 @@ export function Workbench({
         {/* 内容 */}
         <div className="min-w-0 flex-1 overflow-y-auto px-6 py-5 md:px-10">
           <div className="mx-auto max-w-3xl">
+            {/* 2026-08-21: HITL 人工复核确认闸门 —— 低分/异常教案需用户显式"保留或使用/放弃" */}
+            {needsHumanReview && !kept && (
+              <div className="mb-4 rounded-xl border-2 border-amber-300 bg-amber-50 p-4">
+                <div className="flex items-center gap-2 text-sm font-bold text-amber-800">
+                  <AlertTriangle className="h-4 w-4" />
+                  该教案经系统检测可能存在质量问题，需人工复核
+                </div>
+                <p className="mt-1 text-xs leading-relaxed text-amber-700">
+                  评分偏低或内容异常。你可以选择「保留并使用」（仅保存在你的个人库，不会进入共享知识库），或「放弃此教案」。
+                </p>
+                <div className="mt-3 flex flex-wrap gap-2">
+                  <Button size="sm" onClick={() => setKeepDecided(result.sessionId, true)}>
+                    保留并使用
+                  </Button>
+                  <Button
+                    size="sm"
+                    variant="outline"
+                    className="border-red-300 text-red-600 hover:bg-red-50 hover:text-red-700"
+                    onClick={() => {
+                      removeResult(result.sessionId);
+                      onClose();
+                    }}
+                  >
+                    放弃此教案
+                  </Button>
+                </div>
+              </div>
+            )}
+
             <div className="mb-4 flex items-center justify-between rounded-lg border border-amber-200 bg-amber-50 px-3 py-2 text-xs text-amber-800">
               <span>章节编辑为本地预览，不会回写服务器</span>
               <Pencil className="h-3.5 w-3.5" />
             </div>
 
-            {sections.map((sec, idx) => (
+            {sections.map((sec, idx) =>
+              // 已"保留"后隐藏系统注入的红色警告块(仅视觉, 不回写服务器)
+              sec.html.includes('hitl-warning') && kept ? null : (
               <section
                 key={sec.id}
                 id={`wb-section-${sec.id}`}
@@ -251,7 +295,10 @@ export function Workbench({
             {/* E1: 顺序 = 教案全文 → LLM 质量评估 → 用户星级评分 */}
             <div className="mt-8 border-t pt-4">
               <QualityScore score={llmScore} raw={result.reviewText} />
-              <ScorePanel sessionId={result.sessionId} />
+              <ScorePanel
+                sessionId={result.sessionId}
+                onScored={() => useLessonStore.getState().markCompleted(result.sessionId)}
+              />
             </div>
           </div>
         </div>

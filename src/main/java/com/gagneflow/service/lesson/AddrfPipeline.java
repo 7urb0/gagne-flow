@@ -335,7 +335,7 @@ public class AddrfPipeline {
                     logger.warn("[ADDRF] Review 更新 HTML 推送失败: {}", e.getMessage());
                 }
                 try {
-                    this.emitStageComplete(emitter, "stage:review", result.review);
+                    this.emitReviewComplete(emitter, result.review, result.score, this.extractDimensions(result.review));
                 }
                 catch (RuntimeException e) {
                     // emitter 已关闭时 emitStageComplete 内部抛 IllegalStateException, 属预期
@@ -353,7 +353,7 @@ public class AddrfPipeline {
             this.reviewFuture = reviewTask;
         } else {
             result.review = "[\u7cfb\u7edf\u63d0\u793a: \u6559\u6848\u4e3b\u4f53\u4e0d\u5b8c\u6574\uff0c\u8df3\u8fc7\u8bc4\u4f30]";
-            this.emitStageComplete(emitter, "stage:review", result.review);
+            this.emitReviewComplete(emitter, result.review, result.score, this.extractDimensions(result.review));
             // 2026-08-19 联调修复: 同样延迟关闭评分窗口(与正常路径一致)
             this.scheduleScoreWindowClose(sessionId);
         }
@@ -721,6 +721,33 @@ public class AddrfPipeline {
         }
     }
 
+    /**
+     * 2026-08-21: stage:review 事件一并向前端下发后端解析结果 {score, dimensions},
+     * 前端直接消费该单一数据源, 不再自行 re-parse review 文本(消除 P4 契约漂移)。
+     * 新增字段向后兼容(旧前端忽略未知字段)。
+     */
+    private void emitReviewComplete(SseEmitter emitter, String review, int score, Map<String, Integer> dimensions) {
+        if (emitter == null) {
+            return;
+        }
+        try {
+            this.flushInterim(emitter, "review");
+        } catch (Exception ignored) {
+        }
+        try {
+            String safe = review != null ? review.substring(0, Math.min(review.length(), 500)) : "";
+            LinkedHashMap<String, Object> data = new LinkedHashMap<>();
+            data.put("type", "stage:review");
+            data.put("content", safe);
+            data.put("stage", "review");
+            data.put("score", score);
+            data.put("dimensions", dimensions != null ? dimensions : new LinkedHashMap<String, Integer>());
+            emitter.send(SseEmitter.event().name("message").data(data));
+        } catch (IOException | IllegalStateException e) {
+            logger.trace("[ADDRF] stage:review 推送失败 (emitter 可能已关闭): {}", e.getMessage());
+        }
+    }
+
     /*
      * WARNING - Removed try catching itself - possible behaviour change.
      */
@@ -759,6 +786,12 @@ public class AddrfPipeline {
             Thread.currentThread().interrupt();
             String string4 = null;
             return string4;
+        }
+        catch (IllegalStateException e) {
+            // 2026-08-19 联调: emitter 已关闭(SSE 连接断开)时 send 抛 IllegalStateException,
+            // 属预期降级场景, 返回 null 表示放弃本次 copilot 等待, 不应让阶段异常
+            logger.trace("[ADDRF] stage_await 推送跳过 (emitter 已关闭): {}", e.getMessage());
+            return null;
         }
         finally {
             copilotQueues.remove(token);
@@ -893,6 +926,15 @@ public class AddrfPipeline {
         if (review == null) {
             return 0;
         }
+        // 2026-08-21 修复(P4 契约漂移): 优先从末尾 SCORE_JSON 锚点按结构化解析 score,
+        // 避免正文里 stray 的 "score: N" 被误匹配; 解析失败再回退下方 4 种正则写法
+        String scoreBlock = extractScoreJsonBlock(review);
+        if (scoreBlock != null) {
+            Matcher sbm = Pattern.compile("\"score\"\\s*[:：]\\s*(\\d+)").matcher(scoreBlock);
+            if (sbm.find()) {
+                return clampScore(Integer.parseInt(sbm.group(1)));
+            }
+        }
         // 多写法兜底(与前端 parseScore 对齐, 消除 P4 契约漂移): 依次尝试
         // 1) SCORE_JSON "score":N / "score":N(有无引号均可)  2) 总分: N  3) N/100
         Matcher m = Pattern.compile("\"score\"\\s*[:：]\\s*(\\d+)").matcher(review);
@@ -914,6 +956,58 @@ public class AddrfPipeline {
         logger.warn("[ADDRF] 无法从 review 内容中解析评分，默认视为不通过: review 前200字符={}", 
                 review.length() > 200 ? review.substring(0, 200) : review);
         return 0;
+    }
+
+    /**
+     * 2026-08-21 修复(P4 契约漂移): 提取末尾 SCORE_JSON 锚点的 JSON 对象字符串(单行/多行均可)。
+     * 该锚点由 agent-config/prompts/v1/addrf/addrf_review.md 约定为输出末尾固定格式,
+     * 作为前后端唯一可信评分源; 前端改为直接消费后端下发的 {score,dimensions}, 不再自行 re-parse。
+     */
+    private static final Pattern SCORE_JSON_BLOCK = Pattern.compile("SCORE_JSON\\s*:\\s*(\\{[\\s\\S]*\\})\\s*$", Pattern.DOTALL);
+    private String extractScoreJsonBlock(String review) {
+        if (review == null) {
+            return null;
+        }
+        Matcher m = SCORE_JSON_BLOCK.matcher(review.trim());
+        return m.find() ? m.group(1) : null;
+    }
+
+    /**
+     * 2026-08-21: 从 review 解析 5 维度分(clarity/accuracy/strategy/alignment/format, 各 0-20)。
+     * 优先 SCORE_JSON.dimensions; 缺失时回退中文维度表 "目标清晰度: 15/20"(与前端 lenient 对齐)。
+     * 供 stage:review 事件一并下发, 使前端不再自行 re-parse raw review(消除 P4 漂移)。
+     */
+    private static final String[] DIM_KEYS_ARR = {"clarity", "accuracy", "strategy", "alignment", "format"};
+    private static final String[][] ZH_DIM_LABELS = {
+        {"目标清晰度", "clarity"}, {"内容准确性", "accuracy"}, {"策略合理性", "strategy"},
+        {"课标对齐度", "alignment"}, {"格式规范度", "format"}
+    };
+    public Map<String, Integer> extractDimensions(String review) {
+        Map<String, Integer> dims = new LinkedHashMap<>();
+        String block = extractScoreJsonBlock(review);
+        if (block != null) {
+            for (String key : DIM_KEYS_ARR) {
+                Matcher dm = Pattern.compile("\"" + key + "\"\\s*[:：]\\s*(\\d+)").matcher(block);
+                if (dm.find()) {
+                    dims.put(key, clampDim(Integer.parseInt(dm.group(1))));
+                }
+            }
+        }
+        if (dims.size() < 5 && review != null) {
+            for (String[] zh : ZH_DIM_LABELS) {
+                if (!dims.containsKey(zh[1])) {
+                    Matcher zm = Pattern.compile(zh[0] + "\\s*[:：]?\\s*(\\d+)\\s*/\\s*20").matcher(review);
+                    if (zm.find()) {
+                        dims.put(zh[1], clampDim(Integer.parseInt(zm.group(1))));
+                    }
+                }
+            }
+        }
+        return dims;
+    }
+
+    private static int clampDim(int d) {
+        return Math.max(0, Math.min(20, d));
     }
 
     /**
@@ -998,8 +1092,9 @@ public class AddrfPipeline {
             + (result.review != null ? result.review : "")
             + (result.analysis != null ? result.analysis : "");
         if (containsUnsafeKeyword(combined)) {
-            logger.info("[ADDRF-HITL] blocked: \u68c0\u6d4b\u5230\u5371\u9669\u5173\u952e\u8bcd");
+            logger.info("[ADDRF-HITL] blocked: \u68c0\u6d4b\u5230\u5371\u9669\u5173\u952e\u8bcd(\u5b89\u5168\u7c7b)");
             result.needsHumanReview = true;
+            result.needsSafetyReview = true;
             return true;
         }
         // blocked: 用户 1-2 星一票否决（快路径, 适用于评分早于 review 完成的情况）
@@ -1055,7 +1150,8 @@ public class AddrfPipeline {
      */
     public void maybeBackfillNow(AddrfResult r) {
         if (r == null) return;
-        if (r.scheduleBackfill && !r.needsHumanReview) {
+        // 质量类 or 安全类阻断任一为真则不回灌; 用户高分仅可覆盖"质量类", 安全类(危险词)永远不可覆盖
+        if (r.scheduleBackfill && !r.needsHumanReview && !r.needsSafetyReview) {
             try {
                 backfillLessonPlan(r);
             } catch (Exception e) {
@@ -1088,6 +1184,10 @@ public class AddrfPipeline {
         public volatile int score;
         // volatile: HITL标志位（asyncReview线程设置，LessonController主线程读取）
         public volatile boolean needsHumanReview = false;
+        // 2026-08-21: 安全类阻断(危险关键词等合规), 与"质量类"阻断分离 ——
+        // 用户显式高分保留(>=4星)可覆盖"质量类"否决(让个人库可反哺),
+        // 但"安全类"否决(危险关键词)不可被覆盖(合规红线)。
+        public volatile boolean needsSafetyReview = false;
         // 阶段C: 非阻断质量提示(如超长警告), 供前端/日志展示, 不触发人工审核
         public volatile String qualityNote = null;
         // 2026-08-18: 用户评分(1-5星, 0=未评分)。用户评分线程写入, asyncReview线程读取

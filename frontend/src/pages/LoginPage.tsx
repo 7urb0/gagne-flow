@@ -4,8 +4,8 @@ import { toast } from 'sonner';
 import { Button } from '@/components/ui/button';
 import { Input } from '@/components/ui/input';
 import { Label } from '@/components/ui/label';
-import { loginApi, registerApi } from '@/api/auth';
-import { authStorage } from '@/lib/api';
+import { registerApi } from '@/api/auth';
+import { useAuthStore } from '@/store/auth';
 import { cn } from '@/lib/utils';
 
 function Field({
@@ -48,6 +48,7 @@ export function LoginPage() {
   const [password, setPassword] = useState('');
   const [busy, setBusy] = useState(false);
   const navigate = useNavigate();
+  const login = useAuthStore((s) => s.login);
 
   const submit = async (e: React.FormEvent) => {
     e.preventDefault();
@@ -63,8 +64,7 @@ export function LoginPage() {
     setBusy(true);
     try {
       if (mode === 'login') {
-        const data = await loginApi(username.trim(), password);
-        authStorage.save(data.token, data.refreshToken, data.username);
+        await login(username.trim(), password);
         toast.success('登录成功');
         navigate('/chat', { replace: true });
       } else {

@@ -50,10 +50,16 @@ export function StageProgress({
   onViewResult,
   onAbort,
   viewable,
+  autoOpen = true,
+  embedded = false,
 }: {
   onViewResult: () => void;
   onAbort: () => void;
   viewable: boolean;
+  /** 是否自动弹出遮罩弹窗 (copilot 模式传 false, 改用内联进度) */
+  autoOpen?: boolean;
+  /** 内联渲染(不包 Dialog 遮罩), 用于 copilot 模式跟随逐字卡片展示 */
+  embedded?: boolean;
 }) {
   const { generating, stages, currentStage, startedAt, stageStartedAt } = useLessonStore();
   const [confirmAbort, setConfirmAbort] = useState(false);
@@ -75,8 +81,72 @@ export function StageProgress({
 
   const allDone = STAGE_ORDER.every((s) => stages[s] === 'done');
 
+  const progressList = (
+    <div className="flex flex-col gap-2 py-2">
+      {STAGE_ORDER.map((stage) => {
+        const status = stages[stage];
+        const active = currentStage === stage;
+        return (
+          <div
+            key={stage}
+            className={cn(
+              'flex items-center gap-3 rounded-lg px-3 py-2 transition-colors',
+              active && 'bg-primary/10',
+              status === 'done' && 'opacity-70',
+            )}
+          >
+            <StageIcon status={status} />
+            <span
+              className={cn(
+                'flex-1 text-sm',
+                active ? 'font-semibold text-foreground' : 'text-foreground/80',
+              )}
+            >
+              {STAGE_LABELS[stage]}
+            </span>
+            <span
+              className={cn(
+                'text-xs whitespace-nowrap',
+                status === 'running' && 'font-semibold text-primary',
+                status === 'done' && 'text-emerald-600',
+                status === 'error' && 'text-red-600',
+                status === 'pending' && 'text-muted-foreground',
+              )}
+            >
+              {statusText(status, stage, stageStartedAt[stage] ? Date.now() - stageStartedAt[stage] : undefined)}
+            </span>
+          </div>
+        );
+      })}
+    </div>
+  );
+
+  // 内联模式: 跟随逐字卡片展示, 不弹出遮罩
+  if (embedded) {
+    return (
+      <div className="rounded-xl border bg-card p-3 shadow-sm">
+        <div className="mb-1 flex items-center justify-between">
+          <span className="text-xs font-semibold text-muted-foreground">生成进度</span>
+          {generating && (
+            <span className="text-xs tabular-nums text-muted-foreground">
+              已用时 {formatElapsed(elapsed)}
+            </span>
+          )}
+        </div>
+        {progressList}
+        {generating && (
+          <div className="mt-2 flex justify-end border-t pt-2">
+            <Button variant="ghost" size="sm" className="text-muted-foreground" onClick={onAbort}>
+              取消生成
+            </Button>
+          </div>
+        )}
+      </div>
+    );
+  }
+
   return (
-    <Dialog open={generating || allDone} onOpenChange={() => undefined}>
+    <Dialog open={(generating || allDone) && autoOpen} onOpenChange={() => undefined}>
       <DialogContent className="z-[900] max-w-[420px]" hideClose>
         <DialogHeader className="flex-row items-center gap-3 space-y-0 border-b pb-3">
           <DialogTitle className="text-base">教案生成中</DialogTitle>
@@ -99,43 +169,7 @@ export function StageProgress({
           )}
         </DialogHeader>
 
-        <div className="flex flex-col gap-2 py-2">
-          {STAGE_ORDER.map((stage) => {
-            const status = stages[stage];
-            const active = currentStage === stage;
-            return (
-              <div
-                key={stage}
-                className={cn(
-                  'flex items-center gap-3 rounded-lg px-3 py-2 transition-colors',
-                  active && 'bg-primary/10',
-                  status === 'done' && 'opacity-70',
-                )}
-              >
-                <StageIcon status={status} />
-                <span
-                  className={cn(
-                    'flex-1 text-sm',
-                    active ? 'font-semibold text-foreground' : 'text-foreground/80',
-                  )}
-                >
-                  {STAGE_LABELS[stage]}
-                </span>
-                <span
-                  className={cn(
-                    'text-xs whitespace-nowrap',
-                    status === 'running' && 'font-semibold text-primary',
-                    status === 'done' && 'text-emerald-600',
-                    status === 'error' && 'text-red-600',
-                    status === 'pending' && 'text-muted-foreground',
-                  )}
-                >
-                  {statusText(status, stage, stageStartedAt[stage] ? Date.now() - stageStartedAt[stage] : undefined)}
-                </span>
-              </div>
-            );
-          })}
-        </div>
+        {progressList}
 
         <div className="flex justify-end gap-2 border-t pt-3">
           {generating && (

@@ -32,10 +32,14 @@ export function useStreamLesson() {
   }, []);
 
   const run = useCallback(
-    async (params: Record<string, unknown>, handlers: StreamLessonHandlers) => {
+    async (
+      params: Record<string, unknown>,
+      handlers: StreamLessonHandlers,
+    ) => {
       const controller = new AbortController();
       abortRef.current = controller;
-      setGenerating(true);
+      const mode = (params.mode as 'quick' | 'copilot') || 'quick';
+      setGenerating(true, mode);
 
       try {
         await readSse('/api/lesson_plan', params, authStorage.token, {
@@ -65,8 +69,11 @@ export function useStreamLesson() {
               const e = m as { questions: string; token: string };
               handlers.onClarify?.(e.questions || '', e.token || '');
             } else if (type === 'stage_await') {
-              const e = m as { stage: string; token: string; content?: string };
-              handlers.onAwait?.(e.stage || '', e.token || '', e.content || '');
+              // 仅分步确认(copilot)模式处理人工确认, 快速模式忽略
+              if (mode === 'copilot') {
+                const e = m as { stage: string; token: string; content?: string };
+                handlers.onAwait?.(e.stage || '', e.token || '', e.content || '');
+              }
             } else if (type === 'error') {
               const e = m as { data?: string };
               handlers.onError?.(e.data || '生成失败');

@@ -53,7 +53,9 @@ public class VectorSearchService {
         return searchSimilarLessonPlans(query, topK, 0L);
     }
 
-    /** 2026-08-19: 个人教案库去重探针 - 仅查指定用户的教案(_user_id 精确匹配), 跨用户教案不互相去重 */
+    /** 2026-08-19: 个人教案库去重探针 - 仅查指定用户的教案(_user_id 精确匹配), 跨用户教案不互相去重.
+     *  Also guarded by milvus circuit-breaker (review 2026-08-19: 探针也真实打 Milvus, 熔断时降级为"不去重", 由调用方 try-catch 兜底). */
+    @CircuitBreaker(name="milvus", fallbackMethod="searchSimilarLessonPlansFallback")
     public List<SearchResult> searchSimilarLessonPlans(String query, int topK, Long userId) {
         String expr = "metadata[\"_source\"] == \"generated_lesson_plan\"";
         if (userId != null && userId > 0L) {
@@ -64,6 +66,12 @@ public class VectorSearchService {
                 query, topK, this.nprobe,
                 this.embeddingService.generateQueryVector(query),
                 expr);
+    }
+
+    /** Milvus 熔断器 fallback (去重探针): 返回空代表"无已存在相似教案", 即不阻止本次回灌 */
+    public List<SearchResult> searchSimilarLessonPlansFallback(String query, int topK, Long userId, Throwable t) {
+        logger.warn("[CIRCUIT-BREAKER] Milvus\u7194\u65ad\u5668\u5df2\u6253\u5f00(\u53bb\u91cd\u63a2\u9488), \u8fd4\u56de\u7a7a\u7ed3\u679c(\u4e0d\u963b\u6b62\u56de\u704c)\u3002\u67e5\u8be2: {}, \u539f\u56e0: {}", query, t.getMessage());
+        return Collections.emptyList();
     }
 
     /**
@@ -170,6 +178,8 @@ public class VectorSearchService {
         return this.searchWithRerank(query, 0L);
     }
 
+    /** 2026-08-19: 外部入口亦加熔断(InternalDocsTools 通过 this 调 4 参版不触发代理, 需在入口先拦截) */
+    @CircuitBreaker(name="milvus", fallbackMethod="searchWithRerankLongFallback")
     public List<SearchResult> searchWithRerank(String query, Long userId) {
         return this.searchWithRerank(query, this.searchTopK, this.rerankTopN, userId);
     }
@@ -178,6 +188,12 @@ public class VectorSearchService {
         return this.searchWithRerank(query, searchTopK, finalTopK, 0L);
     }
 
+    /**
+     * 2026-08-19: Milvus 熔断器挂在真实检索链路入口（修复: 原挂在已无生产调用的 searchSimilarDocuments 上）。
+     * 生产调用链: searchWithRerank → searchWithAdaptiveNprobe → doSearch(双库) → searchCollection。
+     * 熔断打开时经 fallback 返回空候选, RagService/InternalDocsTools 走"未找到文档"或 k12 fallback 降级。
+     */
+    @CircuitBreaker(name="milvus", fallbackMethod="searchWithRerankFallback")
     public List<SearchResult> searchWithRerank(String query, int searchTopK, int finalTopK, Long userId) {
         logger.info("\u5f00\u59cb\u641c\u7d22+\u91cd\u6392\u6d41\u7a0b, \u67e5\u8be2: {}, \u7c97\u6392\u53ec\u56de: {}, \u7cbe\u6392\u8fd4\u56de: {}, userId: {}", new Object[]{query, searchTopK, finalTopK, userId});
         List<SearchResult> candidates = this.searchWithAdaptiveNprobe(query, searchTopK, userId);
@@ -192,6 +208,18 @@ public class VectorSearchService {
         List<SearchResult> reranked = this.rerankResults(query, candidates, finalTopK);
         logger.info("\u641c\u7d22+\u91cd\u6392\u5b8c\u6210: \u4ece {} \u4e2a\u5019\u9009\u4e2d\u7cbe\u6392\u8fd4\u56de\u524d {} \u4e2a", (Object)candidates.size(), (Object)reranked.size());
         return reranked;
+    }
+
+    /** Milvus 熔断器 fallback: 真实检索链路(Milvus 不可用)降级为空候选, 由调用方走"未找到文档"/k12 fallback */
+    public List<SearchResult> searchWithRerankFallback(String query, int searchTopK, int finalTopK, Long userId, Throwable t) {
+        logger.warn("[CIRCUIT-BREAKER] Milvus\u7194\u65ad\u5668\u5df2\u6253\u5f00(\u771f\u5b9e\u68c0\u7d22\u94fe\u8def), \u8fd4\u56de\u7a7a\u7ed3\u679c\u3002\u67e5\u8be2: {}, \u539f\u56e0: {}", query, t.getMessage());
+        return Collections.emptyList();
+    }
+
+    /** Milvus 熔断器 fallback (2 参入口对应的降级, 供 InternalDocsTools 路径) */
+    public List<SearchResult> searchWithRerankLongFallback(String query, Long userId, Throwable t) {
+        logger.warn("[CIRCUIT-BREAKER] Milvus\u7194\u65ad\u5668\u5df2\u6253\u5f00(\u5de5\u5177\u68c0\u7d22), \u8fd4\u56de\u7a7a\u7ed3\u679c\u3002\u67e5\u8be2: {}, \u539f\u56e0: {}", query, t.getMessage());
+        return Collections.emptyList();
     }
 
     private List<SearchResult> rerankResults(String query, List<SearchResult> candidates, int topK) {

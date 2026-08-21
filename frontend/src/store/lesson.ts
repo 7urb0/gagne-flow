@@ -26,6 +26,8 @@ export interface LessonResultItem {
   userScored: boolean;
   llmScore?: number;
   reviewText?: string;
+  /** 是否需要人工复核(后端 HITL 红字警告已注入 html) */
+  needsHumanReview?: boolean;
 }
 
 interface LessonState {
@@ -38,16 +40,29 @@ interface LessonState {
   stageStartedAt: Record<StageName, number>;
   /** 后端真实教案 sid, 从 stage:format 事件捕获 */
   activeSessionId: string | null;
-  /** 教案结果历史 (L4) */
+  /** 教案结果历史 (L4) —— 重新生成时追加, 不清空 */
   results: LessonResultItem[];
   /** 当前展示的结果索引 */
   activeResultIndex: number;
   /** 用户评分状态 */
   scoreSubmitted: boolean;
   lastError: string | null;
+  /** 本次生成的教学模式: quick=快速生成, copilot=分步确认 */
+  mode: 'quick' | 'copilot';
+
+  /**
+   * 重新生成闸门:
+   * 若新教案生成时用户仍在处理旧教案(未完成/未评分), 新教案暂存此索引,
+   * 不直接抢占展示; 等用户确认"处理完毕"后由 showNewPlan 取出。
+   */
+  pendingNewIndex: number | null;
+  /** 已确认"处理完毕"的教案 sid 集合 (评分或显式确认) */
+  completedSids: Record<string, boolean>;
+  /** HITL 人工复核处, 用户已决策"保留"的 sid 集合 */
+  keepDecided: Record<string, boolean>;
 
   reset: () => void;
-  setGenerating: (v: boolean) => void;
+  setGenerating: (v: boolean, mode?: 'quick' | 'copilot') => void;
   setStageStatus: (stage: StageName, status: StageStatus) => void;
   setCurrentStage: (s: StageName | null) => void;
   setActiveSessionId: (id: string | null) => void;
@@ -56,6 +71,10 @@ interface LessonState {
   setActiveResultIndex: (i: number) => void;
   setScoreSubmitted: (v: boolean) => void;
   setLastError: (msg: string | null) => void;
+  setPendingNew: (i: number | null) => void;
+  markCompleted: (sid: string) => void;
+  setKeepDecided: (sid: string, v: boolean) => void;
+  removeResult: (sid: string) => void;
 }
 
 const initialStages = (): Record<StageName, StageStatus> => ({
@@ -77,7 +96,13 @@ export const useLessonStore = create<LessonState>((set) => ({
   activeResultIndex: 0,
   scoreSubmitted: false,
   lastError: null,
+  mode: 'quick',
+  pendingNewIndex: null,
+  completedSids: {},
+  keepDecided: {},
 
+  // 注意: reset 仅清空"本次生成运行态", 保留 results / completedSids / keepDecided,
+  // 以保证重新生成不会抹掉旧教案(L4 多份保留被误删)与用户的在办状态。
   reset: () =>
     set({
       generating: false,
@@ -88,11 +113,14 @@ export const useLessonStore = create<LessonState>((set) => ({
       activeSessionId: null,
       scoreSubmitted: false,
       lastError: null,
+      mode: 'quick',
+      pendingNewIndex: null,
     }),
-  setGenerating: (v) =>
+  setGenerating: (v, mode) =>
     set((s) => ({
       generating: v,
       startedAt: v ? Date.now() : s.startedAt,
+      mode: mode ?? s.mode,
     })),
   setStageStatus: (stage, status) =>
     set((s) => {
@@ -118,4 +146,19 @@ export const useLessonStore = create<LessonState>((set) => ({
   setActiveResultIndex: (i) => set({ activeResultIndex: i }),
   setScoreSubmitted: (v) => set({ scoreSubmitted: v }),
   setLastError: (msg) => set({ lastError: msg }),
+  setPendingNew: (i) => set({ pendingNewIndex: i }),
+  markCompleted: (sid) =>
+    set((s) => ({ completedSids: { ...s.completedSids, [sid]: true } })),
+  setKeepDecided: (sid, v) =>
+    set((s) => ({ keepDecided: { ...s.keepDecided, [sid]: v } })),
+  removeResult: (sid) =>
+    set((s) => {
+      const idx = s.results.findIndex((r) => r.sessionId === sid);
+      if (idx < 0) return {};
+      const results = s.results.filter((r) => r.sessionId !== sid);
+      return {
+        results,
+        activeResultIndex: Math.max(0, Math.min(s.activeResultIndex, results.length - 1)),
+      };
+    }),
 }));

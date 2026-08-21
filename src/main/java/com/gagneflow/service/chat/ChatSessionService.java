@@ -231,6 +231,9 @@ public class ChatSessionService {
         List<SessionMeta> metas = this.sessionMetaRepo.findByUserIdOrderByUpdateTimeDesc(uid);
         ArrayList<Map<String, Object>> sessions = new ArrayList<Map<String, Object>>();
         for (SessionMeta m : metas) {
+            // 隔离: 教案会话(lesson_ 前缀)仅用于 PDF/评分/LTM 检索, 不出现在智能对话历史列表
+            String sid = m.getSessionId();
+            if (sid == null || sid.startsWith("lesson_")) continue;
             HashMap<String, Object> item = new HashMap<String, Object>();
             item.put("sessionId", m.getSessionId());
             item.put("title", m.getTitle());

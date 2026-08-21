@@ -5,6 +5,7 @@ import { useLessonStore } from '@/store/lesson';
 import { useStreamLesson } from '@/hooks/useStreamLesson';
 import { LessonForm } from '@/components/lesson/LessonForm';
 import { StageProgress } from '@/components/lesson/StageProgress';
+import { Thinking } from '@/components/lesson/Thinking';
 import { Workbench } from '@/components/lesson/Workbench';
 import { ClarifyPanel } from '@/components/lesson/ClarifyPanel';
 import { CopilotConfirm } from '@/components/lesson/CopilotConfirm';
@@ -41,6 +42,11 @@ export function LessonPage() {
     results,
     activeResultIndex,
     setActiveResultIndex,
+    setPendingNew,
+    pendingNewIndex,
+    completedSids,
+    markCompleted,
+    removeResult,
   } = useLessonStore();
 
   const { run, abort } = useStreamLesson();
@@ -54,6 +60,11 @@ export function LessonPage() {
 
   // 当前生成过程的最终 html (updated 事件覆盖)
   const finalHtmlRef = useRef<string | null>(null);
+  // copilot 模式: analysis 阶段的思考过程(analysis_intent 子阶段)内容
+  const [thinkingContent, setThinkingContent] = useState('');
+  // 各阶段是否已收到首个 chunk, 用于 copilot 模式在首个 chunk 前展示"思考中"动画
+  const [stageStarted, setStageStarted] = useState<Record<string, boolean>>({});
+  const mode = useLessonStore((s) => s.mode);
   const previewRef = useRef<string | null>(null);
   const currentSidRef = useRef<string | null>(null);
   const reviewTextRef = useRef<string | null>(null);
@@ -62,6 +73,8 @@ export function LessonPage() {
 
   const resetRunState = () => {
     setStageCards([]);
+    setThinkingContent('');
+    setStageStarted({});
     setClarify(null);
     setAwaits([]);
     setPreviewHtml(null);
@@ -73,6 +86,26 @@ export function LessonPage() {
     useLessonStore.getState().reset();
   };
 
+  /**
+   * 用户确认从"旧教案"切换到"被暂存的新教案"。
+   * 将正在处理的旧教案标记为已处理完毕, 释放闸门, 打开新教案。
+   */
+  const showNewPlan = useCallback(() => {
+    const st = useLessonStore.getState();
+    const idx = st.pendingNewIndex;
+    if (idx == null) return;
+    const cur = st.results[st.activeResultIndex];
+    if (cur) st.markCompleted(cur.sessionId);
+    st.setPendingNew(null);
+    setActiveResultIndex(idx);
+    setWorkbenchOpen(true);
+  }, [setWorkbenchOpen, setActiveResultIndex]);
+
+  /**
+   * 提交一份完成的教案到 results(L4)。
+   * 闸门: 若当前仍有"未处理完毕"的旧教案(未评分且未确认完成), 新教案暂存 pendingNewIndex,
+   * 不直接抢占展示, 并提示用户"处理完旧教案后请确认查看"; 否则直接打开。
+   */
   const commitResult = useCallback(
     (sid: string, html: string, reviewText?: string | null) => {
       if (addedRef.current === sid) return;
@@ -85,8 +118,24 @@ export function LessonPage() {
         userScored: false,
         reviewText: reviewText || undefined,
       });
+      const st = useLessonStore.getState();
+      const idx = st.results.length - 1; // 刚加入的索引
+      const hasUncompleted = st.results
+        .slice(0, idx)
+        .some((r) => !st.completedSids[r.sessionId] && !r.userScored);
+      if (hasUncompleted) {
+        st.setPendingNew(idx);
+        toast.info('新教案已生成', {
+          description: '您正在处理旧教案，处理完毕后请确认查看新教案',
+          duration: 8000,
+          action: { label: '查看新教案', onClick: () => showNewPlan() },
+        });
+      } else {
+        setActiveResultIndex(idx);
+        setWorkbenchOpen(true);
+      }
     },
-    [addResult],
+    [addResult, showNewPlan, setActiveResultIndex, setWorkbenchOpen],
   );
 
   const handleSubmit = useCallback(
@@ -97,8 +146,16 @@ export function LessonPage() {
       await run(params as unknown as Record<string, unknown>, {
         onChunk: (stage, chunk) => {
           const s = stage as StageName;
+          // analysis_intent 子阶段: 仅 copilot 模式作为"思考过程"单独展示
+          if (stage === 'analysis_intent') {
+            if (mode === 'copilot') {
+              setThinkingContent((prev) => prev + chunk);
+            }
+            return;
+          }
           setCurrentStage(s);
           setStageStatus(s, 'running');
+          setStageStarted((prev) => ({ ...prev, [s]: true }));
           setStageCards((prev) => {
             const idx = prev.findIndex((c) => c.stage === s);
             if (idx >= 0) {
@@ -194,6 +251,19 @@ export function LessonPage() {
         )}
       </header>
 
+      {/* 重新生成闸门横幅: 新教案已生成但用户仍在处理旧教案, 需显式确认后才查看 */}
+      {pendingNewIndex != null && results[pendingNewIndex] && (
+        <div className="flex items-center justify-between gap-3 border-b border-amber-200 bg-amber-50 px-5 py-2.5 text-sm">
+          <span className="text-amber-800">
+            <strong className="font-semibold">新教案已生成：</strong>
+            您正在处理旧教案「{results[activeResultIndex]?.title}」，处理完毕后请点击下方确认以查看新教案。
+          </span>
+          <Button size="sm" variant="outline" className="shrink-0 border-amber-300 text-amber-800 hover:bg-amber-100" onClick={() => showNewPlan()}>
+            查看新教案
+          </Button>
+        </div>
+      )}
+
       <div className="min-h-0 flex-1 overflow-y-auto">
         {/* 表单 (生成中隐藏) */}
         {!generating && <LessonForm busy={generating} onSubmit={(p) => void handleSubmit(p)} />}
@@ -203,30 +273,83 @@ export function LessonPage() {
           <div className="mx-auto max-w-3xl px-4 py-5 md:px-6">
             <div className="mb-4 flex items-center gap-2 text-sm font-bold">
               <BookOpenText className="h-4 w-4 text-primary" />
-              正在生成教案
+              {mode === 'quick' ? '正在快速生成教案' : '正在分步生成教案'}
             </div>
-            {clarify && <ClarifyPanel questions={clarify.questions} token={clarify.token} />}
-            {stageCards.map((card) => (
-              <div
-                key={card.stage}
-                className="mb-3 rounded-xl border bg-card p-4 shadow-sm animate-msg-in"
-              >
-                <div className="mb-2 flex items-center gap-2">
-                  <Badge variant={card.streaming ? 'default' : 'secondary'}>
-                    {STAGE_LABELS[card.stage]}
-                  </Badge>
-                  {card.streaming && <Loader2 className="h-3.5 w-3.5 animate-spin text-primary" />}
-                </div>
-                <div className="text-sm leading-relaxed" aria-live="polite">
-                  <Markdown content={card.content || '...'} />
-                </div>
-              </div>
-            ))}
-            {awaits.map((a) => (
-              <CopilotConfirm key={a.key} stage={a.stage} token={a.token} preview={a.content} />
-            ))}
-            {stageCards.length === 0 && awaits.length === 0 && !clarify && (
-              <p className="text-sm text-muted-foreground">正在启动生成流水线...</p>
+
+            {/*
+              快速生成模式(quick): 不暴露中间逐字, 用户等待约 20-30 秒后直接获得完整结果。
+              期间用整体思考动画 + 阶段进度条传达进度, 待 format(updated) 后一次性展示。
+            */}
+            {mode === 'quick' ? (
+              <>
+                <Thinking
+                  size="lg"
+                  label="AI 正在生成完整教案"
+                  hint="预计约 20–30 秒, 完成后将自动展示结果…"
+                />
+              </>
+            ) : (
+              <>
+                {clarify && <ClarifyPanel questions={clarify.questions} token={clarify.token} />}
+                {/* analysis 思考过程(analysis_intent 子阶段) */}
+                {thinkingContent && (
+                  <div className="mb-3 rounded-xl border border-dashed bg-muted/40 p-4 shadow-sm animate-msg-in">
+                    <div className="mb-2 flex items-center gap-2">
+                      <Badge variant="outline">思考过程</Badge>
+                      <Loader2 className="h-3.5 w-3.5 animate-spin text-primary" />
+                    </div>
+                    <div className="text-sm leading-relaxed text-slate-600" aria-live="polite">
+                      <Markdown content={thinkingContent} />
+                    </div>
+                  </div>
+                )}
+                {stageCards.map((card) => (
+                  <div
+                    key={card.stage}
+                    className="mb-3 rounded-xl border bg-card p-4 shadow-sm animate-msg-in"
+                  >
+                    <div className="mb-2 flex items-center gap-2">
+                      <Badge variant={card.streaming ? 'default' : 'secondary'}>
+                        {STAGE_LABELS[card.stage]}
+                      </Badge>
+                      {card.streaming && <Loader2 className="h-3.5 w-3.5 animate-spin text-primary" />}
+                    </div>
+                    {/* 该阶段尚未收到首字: 显示"思考中"动画, 让用户从开始即感知生成 */}
+                    {!stageStarted[card.stage] ? (
+                      <Thinking size="sm" label="正在构思本阶段内容…" />
+                    ) : (
+                      <div className="text-sm leading-relaxed" aria-live="polite">
+                        <Markdown content={card.content || '...'} />
+                      </div>
+                    )}
+                  </div>
+                ))}
+                {awaits.map((a) => (
+                  <CopilotConfirm key={a.key} stage={a.stage} token={a.token} preview={a.content} />
+                ))}
+                {/* 内联进度, 不弹遮罩, 跟随逐字卡片展示 */}
+                <StageProgress
+                  viewable={viewable}
+                  onViewResult={() => {
+                    if (currentSidRef.current && finalHtmlRef.current) {
+                      commitResult(currentSidRef.current, finalHtmlRef.current, reviewTextRef.current);
+                    }
+                    setWorkbenchOpen(true);
+                  }}
+                  onAbort={() => {
+                    abort();
+                    useLessonStore.getState().reset();
+                    setStageCards([]);
+                    setClarify(null);
+                    setAwaits([]);
+                    setThinkingContent('');
+                  }}
+                  embedded
+                />
+                {stageCards.length === 0 && awaits.length === 0 && !clarify && !thinkingContent && (
+                  <Thinking size="md" label="AI 正在分析教学需求…" hint="即将开始生成教案" />
+                )}
+              </>
             )}
           </div>
         )}
@@ -273,10 +396,7 @@ export function LessonPage() {
                     className="rounded p-1 text-muted-foreground hover:bg-muted hover:text-foreground"
                     onClick={(e) => {
                       e.stopPropagation();
-                      useLessonStore.setState((s) => ({
-                        results: s.results.filter((x) => x.sessionId !== r.sessionId),
-                        activeResultIndex: Math.max(0, s.activeResultIndex - 1),
-                      }));
+                      removeResult(r.sessionId);
                     }}
                   >
                     <X className="h-4 w-4" />
@@ -288,8 +408,9 @@ export function LessonPage() {
         )}
       </div>
 
-      {/* 进度弹窗 (E4) */}
+      {/* 进度弹窗 (E4): 默认不自动弹出遮罩, 避免盖住生成中体验; 进度改由内联卡片/思考动画传达 */}
       <StageProgress
+        autoOpen={false}
         viewable={viewable}
         onViewResult={() => {
           if (currentSidRef.current && finalHtmlRef.current) {
@@ -308,10 +429,14 @@ export function LessonPage() {
         }}
       />
 
-      {/* 工作台 (z-500) */}
+      {/* 工作台 (z-500) — 按 sessionId 作 key, 切换多份结果时重挂载, 保留各自已保存的本地编辑 */}
       {workbenchOpen && results[activeResultIndex] && (
         <div className="fixed inset-0 z-[500] bg-background">
-          <Workbench result={results[activeResultIndex]} onClose={() => setWorkbenchOpen(false)} />
+          <Workbench
+            key={results[activeResultIndex].sessionId}
+            result={results[activeResultIndex]}
+            onClose={() => setWorkbenchOpen(false)}
+          />
         </div>
       )}
     </div>

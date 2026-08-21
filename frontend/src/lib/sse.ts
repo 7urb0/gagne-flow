@@ -68,54 +68,64 @@ export async function readSse(
     const reader = res.body.getReader();
     const decoder = new TextDecoder();
     let buf = '';
+    // 2026-08-19 联调修复: done 事件后 autoStopOnDone 主动 abort, 该 abort 是"正常结束"而非中断。
+    // 标志区分两者, 避免 AbortError 被上层误判为"(已中断)"(对话完整结束也显示已中断的 bug)。
+    let stopRequested = false;
 
-    while (true) {
-      const { done, value } = await reader.read();
-      if (done) break;
-      buf += decoder.decode(value, { stream: true });
+    try {
+      while (true) {
+        const { done, value } = await reader.read();
+        if (done) break;
+        buf += decoder.decode(value, { stream: true });
 
-      const lines = buf.split('\n');
-      buf = lines.pop() || '';
+        const lines = buf.split('\n');
+        buf = lines.pop() || '';
 
-      let eventName = 'message';
-      let dataLines: string[] = [];
+        let eventName = 'message';
+        let dataLines: string[] = [];
 
-      const dispatch = () => {
-        const raw = dataLines.join('\n').trim();
-        dataLines = [];
-        if (!raw || raw === '[DONE]') return;
-        onData?.(raw);
-        let parsed: unknown;
-        try {
-          parsed = JSON.parse(raw);
-        } catch {
-          // heartbeat ping 等非 JSON 数据: 忽略, 不报错 (L6)
-          return;
+        const dispatch = () => {
+          const raw = dataLines.join('\n').trim();
+          dataLines = [];
+          if (!raw || raw === '[DONE]') return;
+          onData?.(raw);
+          let parsed: unknown;
+          try {
+            parsed = JSON.parse(raw);
+          } catch {
+            // heartbeat ping 等非 JSON 数据: 忽略, 不报错 (L6)
+            return;
+          }
+          onEvent(eventName, parsed);
+          if (autoStopOnDone && isDoneEvent(eventName, parsed)) {
+            stopRequested = true;
+            controller.abort();
+          }
+        };
+
+        for (const line of lines) {
+          const trimmed = line.trim();
+          if (!trimmed) {
+            dispatch();
+            continue;
+          }
+          if (trimmed.startsWith(':')) continue; // comment
+          if (trimmed.startsWith('event:')) {
+            eventName = trimmed.slice(6).trim();
+          } else if (trimmed.startsWith('data:')) {
+            dataLines.push(trimmed.slice(5).trimStart());
+          } else if (trimmed.startsWith('id:')) {
+            /* ignore */
+          } else if (trimmed.startsWith('retry:')) {
+            /* ignore */
+          }
         }
-        onEvent(eventName, parsed);
-        if (autoStopOnDone && isDoneEvent(eventName, parsed)) {
-          controller.abort();
-        }
-      };
-
-      for (const line of lines) {
-        const trimmed = line.trim();
-        if (!trimmed) {
-          dispatch();
-          continue;
-        }
-        if (trimmed.startsWith(':')) continue; // comment
-        if (trimmed.startsWith('event:')) {
-          eventName = trimmed.slice(6).trim();
-        } else if (trimmed.startsWith('data:')) {
-          dataLines.push(trimmed.slice(5).trimStart());
-        } else if (trimmed.startsWith('id:')) {
-          /* ignore */
-        } else if (trimmed.startsWith('retry:')) {
-          /* ignore */
-        }
+        dispatch();
       }
-      dispatch();
+    } catch (e) {
+      // done 后主动 abort 属正常结束, 吞掉 AbortError; 用户主动取消(signal 触发)仍抛出
+      if (!(e instanceof DOMException && e.name === 'AbortError')) throw e;
+      if (!stopRequested) throw e;
     }
   } finally {
     if (timer) clearTimeout(timer);
