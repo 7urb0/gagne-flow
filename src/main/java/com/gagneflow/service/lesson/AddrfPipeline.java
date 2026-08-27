@@ -1,6 +1,9 @@
 package com.gagneflow.service.lesson;
 
+import com.alibaba.cloud.ai.dashscope.api.DashScopeResponseFormat;
 import com.alibaba.cloud.ai.dashscope.chat.DashScopeChatOptions;
+import com.fasterxml.jackson.databind.JsonNode;
+import com.fasterxml.jackson.databind.ObjectMapper;
 import java.io.IOException;
 import java.time.Duration;
 import java.util.LinkedHashMap;
@@ -12,8 +15,10 @@ import java.util.concurrent.BlockingQueue;
 import java.util.concurrent.CompletableFuture;
 import java.util.concurrent.ConcurrentHashMap;
 import java.util.concurrent.ExecutionException;
+import java.util.concurrent.Executors;
 import java.util.concurrent.Future;
 import java.util.concurrent.LinkedBlockingQueue;
+import java.util.concurrent.ScheduledExecutorService;
 import java.util.concurrent.ThreadPoolExecutor;
 import java.util.concurrent.TimeUnit;
 import java.util.concurrent.TimeoutException;
@@ -27,6 +32,7 @@ import com.gagneflow.service.document.SubjectFormatLoader;
 import com.gagneflow.service.prompt.PromptExperiment;
 import com.gagneflow.service.prompt.PromptMetricsCollector;
 import com.gagneflow.service.prompt.PromptRegistry;
+import jakarta.annotation.PreDestroy;
 import org.slf4j.Logger;
 import org.slf4j.LoggerFactory;
 import org.springframework.ai.chat.messages.AssistantMessage;
@@ -64,9 +70,15 @@ public class AddrfPipeline {
     private final com.gagneflow.service.memory.ConversationMemoryManager memoryManager;
     private final ThreadPoolExecutor executor;
     private final StringRedisTemplate redisTemplate;
+    // P1-4: 评分窗口定时关闭用独立 ScheduledExecutorService, 替代在共享线程池上 Thread.sleep
+    // (原实现在 core=10 的共享池上 sleep 最长 30min, 并发教案多份会抽空核心线程)
+    private volatile ScheduledExecutorService windowScheduler;
     // 阶段C: 回灌延后到评分窗口关闭时定案, 需注入 VectorIndexService 执行入库(字段注入避免破坏直接 new 构造的单测)
     @Autowired(required = false)
     private com.gagneflow.service.vector.VectorIndexService vectorIndexService;
+    // 2026-08-23 quick 直出 HTML: 降级指标(PipelineMetrics 字段注入, 可空容错, 避免破坏直接 new 构造的单测)
+    @Autowired(required = false)
+    private com.gagneflow.service.metrics.PipelineMetrics pipelineMetrics;
     // 2026-08-19 修复: 单例 future 多用户并发互相覆盖 -> 按 sessionId 隔离
     private final ConcurrentHashMap<String, CompletableFuture<Void>> reviewFutures = new ConcurrentHashMap<>();
     @Deprecated
@@ -80,8 +92,6 @@ public class AddrfPipeline {
     // 2026-08-18: Analysis 意图理解 + 澄清(一期)
     @org.springframework.beans.factory.annotation.Value("${gagneflow.addrf.analysis-clarify-enabled:true}")
     private boolean analysisClarifyEnabled;
-    @org.springframework.beans.factory.annotation.Value("${gagneflow.addrf.max-clarify-questions:3}")
-    private int maxClarifyQuestions;
     // 2026-08-19: 澄清等待用户回答的窗口(秒), 超时降级不阻塞
     @org.springframework.beans.factory.annotation.Value("${gagneflow.addrf.clarify-wait-seconds:45}")
     private long clarifyWaitSeconds = 45L;
@@ -93,6 +103,12 @@ public class AddrfPipeline {
     // 2026-08-19 联调修复: 评分窗口时长(秒) — Review 完成后保留 entry, 供用户在查看完整教案后打分
     // 用实例字段(非 static final)便于单测注入短窗口验证
     private long scoreWindowSeconds = 300L;
+    // 2026-08-21: 评分窗口"延迟激活"改造 — Review 完成后先启动的长兜底窗口(分钟),
+    // 防 activeResults 泄漏(用户从未打开教案/关闭页面); 前端实际展示教案时调 activateScoreWindow 进入正式窗口
+    private static final long TOTAL_WINDOW_MINUTES = 30L;
+
+    // 2026-08-23 quick 直出 HTML: MD 降级发生次数(用于观测 LLM 对"输出纯 HTML"的遵守度, 指导后续调 prompt)
+    private final java.util.concurrent.atomic.AtomicLong quickMarkdownFallbackCount = new java.util.concurrent.atomic.AtomicLong(0);
 
     // 2026-08-19: 反哺综合分权重 — 用户评分占比(0-1), LLM 评分占比 = 1 - userWeight
     // 个人教案库(user_id 隔离)不再需要"公共库质量优先", 用户主观认可应参与入库决策
@@ -104,6 +120,11 @@ public class AddrfPipeline {
         return sessionId == null ? null : this.activeResults.get(sessionId);
     }
 
+    /** 2026-08-23: quick 直出 HTML 的 MD 降级次数(观测 LLM 遵守度) */
+    public long getQuickMarkdownFallbackCount() {
+        return this.quickMarkdownFallbackCount.get();
+    }
+
     /** 供 LessonController 评分成功后主动移除, 提前关闭评分窗口 */
     public void removeActiveResult(String sessionId) {
         if (sessionId != null) {
@@ -113,17 +134,25 @@ public class AddrfPipeline {
 
     /**
      * Review 完成后延迟移除注册表: 用户需先查看完整教案(updated 事件)再打分,
-     * 若 Review 完成立即移除则评分必然 404(联调实测)。延迟 SCORE_WINDOW_SECONDS 兜底防泄漏。
+     * 若 Review 完成立即移除则评分必然 404(联调实测)。延迟 windowSec 兜底防泄漏。
+     * 窗口关闭时最终定案(consolidateQuality + maybeBackfillNow)后移除 entry。
      */
-    private void scheduleScoreWindowClose(String sessionId) {
+    private void scheduleScoreWindowClose(String sessionId, long windowSec) {
         if (sessionId == null) return;
-        long windowMs = this.scoreWindowSeconds * 1000L;
-        CompletableFuture.runAsync(() -> {
-            try {
-                Thread.sleep(windowMs);
-            } catch (InterruptedException e) {
-                Thread.currentThread().interrupt();
+        // P1-4: 用独立 ScheduledExecutorService 定时执行, 不在共享线程池上 Thread.sleep(避免占线程).
+        // 原实现 CompletableFuture.runAsync(executor) + sleep(windowMs), 兜底窗口 30min 会占住共享池线程.
+        ScheduledExecutorService scheduler = this.windowScheduler;
+        if (scheduler == null) {
+            synchronized (this) {
+                scheduler = this.windowScheduler;
+                if (scheduler == null) {
+                    scheduler = Executors.newSingleThreadScheduledExecutor(
+                            r -> { Thread t = new Thread(r, "adDRF-window"); t.setDaemon(true); return t; });
+                    this.windowScheduler = scheduler;
+                }
             }
+        }
+        scheduler.schedule(() -> {
             // 阶段C(回灌延后): 评分窗口关闭时最终定案。未评分用户走此路径(consolidateQuality 仅对竞态防御),
             // 已评分用户已在评分接口 maybeBackfillNow 定案并释放 entry。
             this.consolidateQuality(sessionId);
@@ -133,7 +162,28 @@ public class AddrfPipeline {
             }
             this.activeResults.remove(sessionId);
             logger.debug("[ADDRF] 评分窗口关闭: sessionId={}", sessionId);
-        }, this.executor);
+        }, windowSec, TimeUnit.SECONDS);
+    }
+
+    /**
+     * 2026-08-21: 评分窗口"延迟激活" — 用户实际查看教案(前端打开工作台)时调用,
+     * 启动正式评分窗口(scoreWindowSeconds)。幂等: 每个 sessionId 只激活一次。
+     * <p>
+     * 背景: 重新生成时新教案会被前端暂存(pendingNewIndex 闸门), 用户先处理旧教案,
+     * 若 Review 完成即开始 300s 计时, 用户处理完旧教案再看新教案时窗口可能已关闭(评分 404)。
+     * 改为"展示即激活": Review 后只启动长兜底窗口(30min), 用户真正看到新教案才进入正式窗口。
+     * </p>
+     */
+    public void activateScoreWindow(String sessionId) {
+        if (sessionId == null) return;
+        this.activeResults.computeIfPresent(sessionId, (k, r) -> {
+            if (!r.scoreWindowActivated) {
+                r.scoreWindowActivated = true;
+                this.scheduleScoreWindowClose(sessionId, this.scoreWindowSeconds);
+                logger.info("[ADDRF] 评分窗口激活: sessionId={}, 正式窗口 {}s", sessionId, this.scoreWindowSeconds);
+            }
+            return r;
+        });
     }
 
     @Autowired
@@ -185,6 +235,72 @@ public class AddrfPipeline {
         return new ThreadPoolExecutor(2, 4, 60L, TimeUnit.SECONDS, new LinkedBlockingQueue<Runnable>(50), new ThreadPoolExecutor.CallerRunsPolicy());
     }
 
+    /**
+     * quick 模式独立路径（2026-08-23）：一次 LLM 调用直出完整教案，不做 Design/Development 分解、
+     * 不澄清、不缓存、不 Review、不 HITL、不挂评分窗口、不回灌。
+     * 契约：流式推 stage:content → 完成推 stage:format(带真实 sessionId, updated:false) → done。
+     * 不推 stage:analysis/design/development/review、stage_await、analysis_clarify。
+     */
+    public AddrfResult executeQuick(LessonPlanRequest request, ChatModelPort chatModel, SseEmitter emitter,
+                                    String sessionContext, Long userId, String sessionId) {
+        AddrfResult result = new AddrfResult();
+        if (sessionId != null) {
+            this.activeResults.put(sessionId, result);
+        }
+        try {
+            String k12Ctx = this.loadK12Context(request);
+            String initialInput = this.buildInitialInput(request, k12Ctx, sessionContext);
+            // 2026-08-23 quick 升级: 优先 LLM 直出 HTML(绕开 simpleMarkdown 围栏/表格漂移), 含 MD 特征时降级 MD 路径。
+            String quickPrompt = this.loadPrompt("addrf_quick_html", userId);
+            quickPrompt = this.appendPersonalizedContext(quickPrompt, userId, sessionId, "quick");
+            String quickOut = this.callAgent(chatModel, quickPrompt, initialInput, emitter, "quick", "quick", 180, request.getSubject(), sessionId);
+            if (quickOut == null || quickOut.isBlank()) {
+                quickOut = "";
+                logger.warn("[ADDRF-QUICK] \u5feb\u901f\u6559\u6848\u751f\u6210\u5931\u8d25: subject={}, uid={}", request.getSubject(), userId);
+            }
+            boolean isMarkdown = this.looksLikeMarkdown(quickOut);
+            if (isMarkdown) {
+                // 降级: LLM 未遵 HTML 约束(混入 ** / 行首## / 管道表格) -> 回退旧 MD 路径
+                this.quickMarkdownFallbackCount.incrementAndGet();
+                if (this.pipelineMetrics != null) {
+                    this.pipelineMetrics.recordQuickFallback();
+                }
+                logger.warn("[ADDRF-QUICK] \u68c0\u6d4b\u5230 Markdown \u7279\u5f81, \u964d\u7ea7 MD \u8def\u5f84: uid={}, sid={}", userId, sessionId);
+                result.development = quickOut;
+                result.html = this.formatTool.format("", "", quickOut, "");
+            } else {
+                // 主路径: 直出 HTML(Jsoup 白名单消毒 -> emoji 安全化 -> 套外壳)
+                result.html = this.formatTool.formatDirect(quickOut);
+            }
+            this.emitStageCompleteFull(emitter, "stage:format", result.html, sessionId);
+            logger.info("[ADDRF-QUICK] \u5feb\u901f\u6559\u6848\u751f\u6210\u5b8c\u6210: {} \u5b57\u7b26, subject={}, uid={}, sid={}, mdFallback={}",
+                    quickOut.length(), request.getSubject(), userId, sessionId, isMarkdown);
+        } catch (Exception e) {
+            logger.error("[ADDRF-QUICK] \u5feb\u901f\u6559\u6848\u751f\u6210\u5f02\u5e38: {}, uid={}, sid={}", e.getMessage(), userId, sessionId);
+            result.html = "<p>\u751f\u6210\u5931\u8d25\uff1a" + (e.getMessage() != null ? e.getMessage() : "\u672a\u77e5\u9519\u8bef") + "</p>";
+            this.emitStageCompleteFull(emitter, "stage:format", result.html, sessionId);
+        }
+        return result;
+    }
+
+    /** 判断 quick 输出是否混入 Markdown 特征(粗体 ** / 行首 ## 标题 / 管道符表格) -> 需要降级到 MD 路径 */
+    private boolean looksLikeMarkdown(String text) {
+        if (text == null || text.isBlank()) {
+            return false;
+        }
+        // HTML 主路径: 输出以 < 开头的标签, 或含 <p>/<table>/<h2> 等
+        boolean hasHtmlTag = text.contains("<p") || text.contains("<table") || text.contains("<h2") || text.contains("<h3");
+        if (hasHtmlTag) {
+            // 含 HTML 标签但明显混入 MD 痕迹(管道表格/行首#/裸 **) 也判 MD
+            boolean hasMdTable = text.matches("(?s).*\\n\\s*\\|[^\\n]*\\|.*");
+            boolean hasMdHeading = text.matches("(?m)^#{1,3} .+");
+            boolean hasMdBold = text.matches("(?s).*\\*\\*[^*]+\\*\\*.*");
+            return hasMdTable || hasMdHeading || hasMdBold;
+        }
+        // 无 HTML 标签(纯文本/MD) -> 判 MD
+        return true;
+    }
+
     public AddrfResult execute(LessonPlanRequest request, ChatModelPort chatModel, SseEmitter emitter, String mode, ConcurrentHashMap<String, BlockingQueue<String>> copilotQueues, String sessionContext, Long userId, String sessionId) {
         boolean devDegraded;
         String enhancedDevPrompt;
@@ -211,7 +327,7 @@ public class AddrfPipeline {
                     String analysisPrompt = this.loadPrompt("addrf_analysis", userId);
                     // 2026-08-18: Analysis 前置意图理解 + 澄清问题(一期, 建议式不阻塞)
                     String clarifiedInput = this.runAnalysisClarify(chatModel, initialInput, emitter, userId, sessionId, copilotQueues, request.getSubject());
-                    result.analysis = this.callStageWithRevise(chatModel, analysisPrompt, clarifiedInput, emitter, "analysis", mode, copilotQueues, 60, request.getSubject());
+                    result.analysis = this.callStageWithRevise(chatModel, analysisPrompt, clarifiedInput, emitter, "analysis", mode, copilotQueues, 60, request.getSubject(), sessionId);
                     if (TERMINATED.equals(result.analysis)) {
                         result.analysis = "[\u7528\u6237\u7ec8\u6b62]";
                         return result;
@@ -247,7 +363,7 @@ public class AddrfPipeline {
                 final String devPromptFinal = this.appendPersonalizedContext(
                         enhancedDevPrompt, userId, sessionId, "development");
                 CompletableFuture<Void> designFuture = CompletableFuture.runAsync(() -> {
-                    result.design = this.callStageWithRevise(chatModel, designPromptFinal, result.analysis, emitter, "design", mode, copilotQueues, 60, request.getSubject());
+                    result.design = this.callStageWithRevise(chatModel, designPromptFinal, result.analysis, emitter, "design", mode, copilotQueues, 60, request.getSubject(), sessionId);
                     logger.info("[ADDRF] Design \u5b8c\u6210, {} \u5b57\u7b26", (Object)(result.design != null ? result.design.length() : 0));
                 }, this.executor).exceptionally(ex -> {
                     logger.error("[ADDRF] Design \u9636\u6bb5\u5185\u90e8\u5f02\u5e38\u88ab\u5f02\u6b65\u4efb\u52a1\u6355\u83b7", ex);
@@ -255,7 +371,7 @@ public class AddrfPipeline {
                     return null;
                 });
                 devFuture = CompletableFuture.runAsync(() -> {
-                    result.development = this.callStageWithRevise(chatModel, devPromptFinal, result.analysis, emitter, "development", mode, copilotQueues, 180, request.getSubject());
+                    result.development = this.callStageWithRevise(chatModel, devPromptFinal, result.analysis, emitter, "development", mode, copilotQueues, 180, request.getSubject(), sessionId);
                     logger.info("[ADDRF] Development \u5b8c\u6210, {} \u5b57\u7b26", (Object)(result.development != null ? result.development.length() : 0));
                 }, this.executor).exceptionally(ex -> {
                     logger.error("[ADDRF] Development \u9636\u6bb5\u5185\u90e8\u5f02\u5e38\u88ab\u5f02\u6b65\u4efb\u52a1\u6355\u83b7", ex);
@@ -264,6 +380,16 @@ public class AddrfPipeline {
                 });
                 try {
                     designFuture.get(240L, TimeUnit.SECONDS);
+                    // P1-2: copilot 终止需在 Design/Development 也生效(原仅 Analysis 检查)。
+                    // 用户点在 design 阶段的 stage_await 上点"终止" -> callStageWithRevise 返回 TERMINATED,
+                    // 若不处理会把字面 "_TERMINATED_" 写入 HTML; 改为取消并行 dev 并提前返回。
+                    if (TERMINATED.equals(result.design)) {
+                        logger.info("[ADDRF] Design \u9636\u6bb5\u7528\u6237\u7ec8\u6b62");
+                        devFuture.cancel(true);
+                        result.design = "[\u7528\u6237\u7ec8\uff08Design \u9636\u6bb5\u7ec8\u6b62\uff09]";
+                        result.development = null;
+                        return result;
+                    }
                 }
                 catch (TimeoutException e) {
                     logger.warn("[ADDRF] Design \u9636\u6bb5\u8d85\u65f6({}s)", (Object)240);
@@ -280,6 +406,14 @@ public class AddrfPipeline {
             }
             try {
                 devFuture.get(240L, TimeUnit.SECONDS);
+                if (TERMINATED.equals(result.development)) {
+                    logger.info("[ADDRF] Development \u9636\u6bb5\u7528\u6237\u7ec8\u6b62");
+                    result.development = "[\u7528\u6237\u7ec8\uff08Development \u9636\u6bb5\u7ec8\u6b62\uff09]";
+                    result.design = result.design != null
+                            && result.design.startsWith(DEGRADED_PREFIX) ? "[\u7528\u6237\u7ec8]"
+                            : result.design;
+                    return result;
+                }
             }
             catch (TimeoutException e) {
                 logger.warn("[ADDRF] Development \u9636\u6bb5\u8d85\u65f6({}s)", (Object)240);
@@ -335,15 +469,15 @@ public class AddrfPipeline {
                     logger.warn("[ADDRF] Review 更新 HTML 推送失败: {}", e.getMessage());
                 }
                 try {
-                    this.emitReviewComplete(emitter, result.review, result.score, this.extractDimensions(result.review));
+                    this.emitReviewComplete(emitter, result.review, result.score, this.resolveReviewDimensions(result), sessionId);
                 }
                 catch (RuntimeException e) {
                     // emitter 已关闭时 emitStageComplete 内部抛 IllegalStateException, 属预期
                     logger.trace("[ADDRF] stage:review 推送跳过 (emitter 已关闭): {}", e.getMessage());
                 }
                 // 2026-08-19 联调修复: 延迟关闭评分窗口 — Review 完成后保留 entry 供用户打分,
-                // 立即移除会导致用户评分必然 404(前端在 Review 完成后才展示评分面板)
-                this.scheduleScoreWindowClose(sessionId);
+                // 2026-08-21 改造: 先启动长兜底窗口(30min 防泄漏), 前端展示教案时 activateScoreWindow 进入正式窗口
+                this.scheduleScoreWindowClose(sessionId, TOTAL_WINDOW_MINUTES * 60L);
             }, this.executor);
             // 2026-08-19 修复: 按 sessionId 存 future(消除多用户并发覆盖), 完成后移除
             if (sessionId != null) {
@@ -353,9 +487,9 @@ public class AddrfPipeline {
             this.reviewFuture = reviewTask;
         } else {
             result.review = "[\u7cfb\u7edf\u63d0\u793a: \u6559\u6848\u4e3b\u4f53\u4e0d\u5b8c\u6574\uff0c\u8df3\u8fc7\u8bc4\u4f30]";
-            this.emitReviewComplete(emitter, result.review, result.score, this.extractDimensions(result.review));
-            // 2026-08-19 联调修复: 同样延迟关闭评分窗口(与正常路径一致)
-            this.scheduleScoreWindowClose(sessionId);
+            this.emitReviewComplete(emitter, result.review, result.score, this.resolveReviewDimensions(result), sessionId);
+            // 2026-08-19 联调修复: 同样延迟关闭评分窗口(与正常路径一致), 长兜底窗口
+            this.scheduleScoreWindowClose(sessionId, TOTAL_WINDOW_MINUTES * 60L);
         }
         return result;
     }
@@ -411,7 +545,7 @@ public class AddrfPipeline {
             return userInput;
         }
         try {
-            String intentOutput = this.callAgent(chatModel, intentPrompt, userInput, emitter, "analysis_intent", "quick", 60, subject);
+            String intentOutput = this.callAgent(chatModel, intentPrompt, userInput, emitter, "analysis_intent", "quick", 60, subject, sessionId);
             if (intentOutput == null || intentOutput.isBlank()) {
                 return userInput;
             }
@@ -484,14 +618,14 @@ public class AddrfPipeline {
         return section.replaceAll("(?m)^\\s*[-\\d.、]+\\s*", "").trim();
     }
 
-    private String callStageWithRevise(ChatModelPort chatModel, String systemPrompt, String userInput, SseEmitter emitter, String stage, String mode, ConcurrentHashMap<String, BlockingQueue<String>> copilotQueues, int timeoutSec, String subject) {
+    private String callStageWithRevise(ChatModelPort chatModel, String systemPrompt, String userInput, SseEmitter emitter, String stage, String mode, ConcurrentHashMap<String, BlockingQueue<String>> copilotQueues, int timeoutSec, String subject, String sessionId) {
         Object currentInput = userInput;
         for (int round = 0; round < 5; ++round) {
-            Object content = this.callAgent(chatModel, systemPrompt, (String)currentInput, emitter, stage, mode, timeoutSec, subject);
+            Object content = this.callAgent(chatModel, systemPrompt, (String)currentInput, emitter, stage, mode, timeoutSec, subject, sessionId);
             if (content == null) {
                 content = "[\u7cfb\u7edf\u63d0\u793a: " + stage + " \u9636\u6bb5\u751f\u6210\u5931\u8d25]";
             }
-            this.emitStageComplete(emitter, "stage:" + stage, content.toString());
+            this.emitStageComplete(emitter, "stage:" + stage, content.toString(), sessionId);
             String action = this.emitCopilotAwait(emitter, stage, mode, (String)content, copilotQueues);
             if (action == null) {
                 return (String) content;
@@ -509,7 +643,7 @@ public class AddrfPipeline {
             logger.info("Copilot {} \u7b2c{}\u8f6e\u4fee\u8ba2: {}", new Object[]{stage, round + 1, instruction});
             currentInput = userInput + "\n\n[\u7528\u6237\u4fee\u6539\u610f\u89c1]: " + instruction;
         }
-        return this.callAgent(chatModel, systemPrompt, userInput, emitter, stage, mode, timeoutSec, subject);
+        return this.callAgent(chatModel, systemPrompt, userInput, emitter, stage, mode, timeoutSec, subject, sessionId);
     }
 
     private void asyncReview(AddrfResult result, ChatModelPort chatModel, String devPrompt, SseEmitter emitter, String k12Ctx, String subject, Long userId, String sessionId) {
@@ -518,12 +652,18 @@ public class AddrfPipeline {
             String reviewPrompt = this.loadPrompt("addrf_review", userId) + "\n\n\u8bfe\u7a0b\u6807\u51c6\uff1a\n" + k12Ctx;
             // 个性化注入: 用户评价标准入 Review 评分(核心), 避免按通用标准误判个性化教案
             reviewPrompt = this.appendPersonalizedContext(reviewPrompt, userId, sessionId, "review");
-            result.review = this.callAgent(chatModel, reviewPrompt, result.development, null, "review", "quick", 60, subject);
-            if (result.review == null) {
-                result.review = "[\u7cfb\u7edf\u63d0\u793a: Review \u9636\u6bb5\u751f\u6210\u5931\u8d25]";
-                break;
+            String reviewRaw = this.callAgentJson(chatModel, reviewPrompt, result.development, null, "review", "quick", 60, subject, sessionId);
+            ReviewJson parsedReview = this.parseReviewJson(reviewRaw);
+            if (parsedReview != null) {
+                // 2026-08-21 Layer 2: 结构化 JSON 评审成功 -> 直接采用 report/score/dimensions(单一数据源, 前后端同源)
+                result.review = parsedReview.report;
+                result.score = parsedReview.score;
+                result.reviewDimensions = parsedReview.dimensions;
+            } else {
+                // 降级: 原样使用(兼容旧版自由文本评审), extractScore 正则兜底
+                result.review = reviewRaw != null ? reviewRaw : "[\u7cfb\u7edf\u63d0\u793a: Review \u9636\u6bb5\u751f\u6210\u5931\u8d25]";
+                result.score = this.extractScore(result.review);
             }
-            result.score = this.extractScore(result.review);
             // 记录 Review 评分到 Prompt 指标收集器
             try {
                 int reviewVersion = this.promptRegistry.getActiveVersionNumber("addrf_review");
@@ -544,7 +684,7 @@ public class AddrfPipeline {
             }
             prevScore = result.score;
             String feedback = this.extractFeedback(result.review);
-            result.development = this.callAgent(chatModel, devPrompt + "\n\u4fee\u6539\u610f\u89c1\uff1a\n" + feedback, result.analysis, null, "development", "quick", 180, subject);
+            result.development = this.callAgent(chatModel, devPrompt + "\n\u4fee\u6539\u610f\u89c1\uff1a\n" + feedback, result.analysis, null, "development", "quick", 180, subject, sessionId);
             if (result.development == null || result.development.startsWith(DEGRADED_PREFIX)) break;
             // 自愈闭环: 重跑后的新 development 必须回传给前端(否则用户看到旧 development+新 review 的不一致组合)
             this.pushRefreshedDevelopment(emitter, result, sessionId);
@@ -583,7 +723,7 @@ public class AddrfPipeline {
     }
 
     private String callAgent(ChatModelPort chatModel, String systemPrompt, String userInput, SseEmitter emitter, String stage, String mode, String subject) {
-        return this.callAgent(chatModel, systemPrompt, userInput, emitter, stage, mode, 60, subject);
+        return this.callAgent(chatModel, systemPrompt, userInput, emitter, stage, mode, 60, subject, false, null);
     }
 
     int resolveMaxTokens(String stage, String subject) {
@@ -597,22 +737,46 @@ public class AddrfPipeline {
     }
 
     private String callAgent(ChatModelPort chatModel, String systemPrompt, String userInput, SseEmitter emitter, String stage, String mode, int timeoutSec) {
-        return this.callAgent(chatModel, systemPrompt, userInput, emitter, stage, mode, timeoutSec, null);
+        return this.callAgent(chatModel, systemPrompt, userInput, emitter, stage, mode, timeoutSec, null, false, null);
     }
 
-    private String callAgent(ChatModelPort chatModel, String systemPrompt, String userInput, SseEmitter emitter, String stage, String mode, int timeoutSec, String subject) {
+    private String callAgent(ChatModelPort chatModel, String systemPrompt, String userInput, SseEmitter emitter, String stage, String mode, int timeoutSec, String subject, String sessionId) {
+        return this.callAgent(chatModel, systemPrompt, userInput, emitter, stage, mode, timeoutSec, subject, false, sessionId);
+    }
+
+    /**
+     * 2026-08-21 Layer 2: Review 阶段专用 —— 强制模型输出合法 JSON(response_format=json_object),
+     * 从模型层杜绝输出格式抖动(与 Layer 1 的"单一解析源"叠加后, 解析失败率趋近于 0)。
+     */
+    private String callAgentJson(ChatModelPort chatModel, String systemPrompt, String userInput, SseEmitter emitter, String stage, String mode, int timeoutSec, String subject, String sessionId) {
+        return this.callAgent(chatModel, systemPrompt, userInput, emitter, stage, mode, timeoutSec, subject, true, sessionId);
+    }
+
+    private ChatOptions buildChatOptions(int maxTokens, boolean jsonMode) {
+        if (jsonMode) {
+            return DashScopeChatOptions.builder().withMaxToken(Integer.valueOf(maxTokens))
+                    .withResponseFormat(DashScopeResponseFormat.builder().type(DashScopeResponseFormat.Type.JSON_OBJECT).build())
+                    .build();
+        }
+        return DashScopeChatOptions.builder().withMaxToken(Integer.valueOf(maxTokens)).build();
+    }
+
+    private String callAgent(ChatModelPort chatModel, String systemPrompt, String userInput, SseEmitter emitter, String stage, String mode, int timeoutSec, String subject, boolean jsonMode, String sessionId) {
         // 2026-08-19 优化: 去掉 executor.submit 嵌套(每阶段只占 1 线程, 不再编排线程等 worker 空转)
         // 超时控制改为 Flux.timeout 操作符, 同线程流式 + 超时
         int maxTokens = this.resolveMaxTokens(stage, subject);
         try {
-            Prompt prompt = new Prompt(List.of(new SystemMessage(systemPrompt), new UserMessage(userInput)), (ChatOptions)DashScopeChatOptions.builder().withMaxToken(Integer.valueOf(maxTokens)).build());
+            Prompt prompt = new Prompt(List.of(new SystemMessage(systemPrompt), new UserMessage(userInput)), this.buildChatOptions(maxTokens, jsonMode));
             StringBuilder full = new StringBuilder();
             Flux<ChatResponse> flux = chatModel.stream(prompt);
             flux.timeout(java.time.Duration.ofSeconds(timeoutSec)).doOnNext(response -> {
                 String chunk;
                 if (response != null && response.getResult() != null && (chunk = response.getResult().getOutput().getText()) != null) {
                     full.append(chunk);
-                    this.emitInterim(emitter, stage, chunk);
+                    // JSON 模式: 中间块是零散 JSON 片段, 对前端无展示价值, 不推 interim
+                    if (!jsonMode) {
+                        this.emitInterim(emitter, sessionId, stage, chunk);
+                    }
                 }
             }).blockLast();
             return full.toString();
@@ -625,7 +789,7 @@ public class AddrfPipeline {
                 logger.warn("[ADDRF] {} stream() \u964d\u7ea7 call(): {}", (Object)stage, (Object)e.getMessage());
             }
             try {
-                Prompt prompt = new Prompt(List.of(new SystemMessage(systemPrompt), new UserMessage(userInput)), (ChatOptions)DashScopeChatOptions.builder().withMaxToken(Integer.valueOf(maxTokens)).build());
+                Prompt prompt = new Prompt(List.of(new SystemMessage(systemPrompt), new UserMessage(userInput)), this.buildChatOptions(maxTokens, jsonMode));
                 ChatResponse response2 = chatModel.call(prompt);
                 if (response2 != null && response2.getResult() != null) {
                     AssistantMessage msg = response2.getResult().getOutput();
@@ -640,6 +804,7 @@ public class AddrfPipeline {
     }
 
     // 2026-08-19: 节流缓冲 - 按 stage 累积, 达 50 字或 100ms 才推送(改善前端观感, 减少 SSE 消息数)
+    // 2026-08-23 P0-3: key 追加 sessionId 隔离(原按 stage 共享, 多用户并行进同阶段 chunk 交叉混写)
     private final java.util.concurrent.ConcurrentHashMap<String, StringBuilder> interimBuffers = new java.util.concurrent.ConcurrentHashMap<>();
     private final java.util.concurrent.ConcurrentHashMap<String, Long> interimLastFlush = new java.util.concurrent.ConcurrentHashMap<>();
     private static final int INTERIM_FLUSH_CHARS = 50;
@@ -647,36 +812,42 @@ public class AddrfPipeline {
     // 改 500ms 兜底: 50 字为主触发, 时间只防残留卡住(慢速吐字时也能流畅输出)
     private static final long INTERIM_FLUSH_MS = 500L;
 
-    private void emitInterim(SseEmitter emitter, String stage, String chunk) {
+    private String interimKey(String sessionId, String stage) {
+        return (sessionId == null ? "" : sessionId) + ":" + stage;
+    }
+
+    private void emitInterim(SseEmitter emitter, String sessionId, String stage, String chunk) {
         if (emitter == null || chunk == null || chunk.isEmpty()) {
             return;
         }
+        String key = interimKey(sessionId, stage);
         // 节流累积
-        StringBuilder buf = this.interimBuffers.computeIfAbsent(stage, k -> new StringBuilder());
+        StringBuilder buf = this.interimBuffers.computeIfAbsent(key, k -> new StringBuilder());
         boolean flush;
         synchronized (buf) {
             buf.append(chunk);
             long now = System.currentTimeMillis();
             // 2026-08-19 修复: computeIfAbsent 而非 getOrDefault(0) - 首次调用记录时间但不触发时间条件
             // (旧实现 now-0 远超 500ms, 第一个 chunk 就立即 flush, 破坏节流)
-            long last = this.interimLastFlush.computeIfAbsent(stage, k -> now);
+            long last = this.interimLastFlush.computeIfAbsent(key, k -> now);
             flush = buf.length() >= INTERIM_FLUSH_CHARS || (now - last) >= INTERIM_FLUSH_MS;
         }
         if (flush) {
-            flushInterim(emitter, stage);
+            flushInterim(emitter, sessionId, stage);
         }
     }
 
     /** 推送缓冲内容并重置 */
-    private void flushInterim(SseEmitter emitter, String stage) {
-        StringBuilder buf = this.interimBuffers.get(stage);
+    private void flushInterim(SseEmitter emitter, String sessionId, String stage) {
+        String key = interimKey(sessionId, stage);
+        StringBuilder buf = this.interimBuffers.get(key);
         if (buf == null) return;
         String batch;
         synchronized (buf) {
             if (buf.length() == 0) return;
             batch = buf.toString();
             buf.setLength(0);
-            this.interimLastFlush.put(stage, System.currentTimeMillis());
+            this.interimLastFlush.put(key, System.currentTimeMillis());
         }
         try {
             emitter.send(SseEmitter.event().name("message").data(Map.of("type", "stage:content", "stage", stage, "chunk", batch)));
@@ -701,7 +872,7 @@ public class AddrfPipeline {
         // 2026-08-19: 阶段完成前先 flush 节流缓冲的残余内容(避免 <50 字的内容滞留)
         try {
             String flushStage = eventType.replace("stage:", "");
-            this.flushInterim(emitter, flushStage);
+            this.flushInterim(emitter, sessionId, flushStage);
         } catch (Exception ignored) {
         }
         try {
@@ -722,16 +893,47 @@ public class AddrfPipeline {
     }
 
     /**
-     * 2026-08-21: stage:review 事件一并向前端下发后端解析结果 {score, dimensions},
-     * 前端直接消费该单一数据源, 不再自行 re-parse review 文本(消除 P4 契约漂移)。
-     * 新增字段向后兼容(旧前端忽略未知字段)。
+     * 2026-08-23 quick 独立: 推送完整内容的 stage 完成事件(不截断到 500)。
+     * 与 {@link #emitStageComplete} 的唯一区别是 content 不截断 ——
+     * 用于 quick 模式的首个 stage:format(前端以它为最终完整教案, 无 updated 二次推送覆盖)。
      */
-    private void emitReviewComplete(SseEmitter emitter, String review, int score, Map<String, Integer> dimensions) {
+    private void emitStageCompleteFull(SseEmitter emitter, String eventType, String content, String sessionId) {
         if (emitter == null) {
             return;
         }
         try {
-            this.flushInterim(emitter, "review");
+            String flushStage = eventType.replace("stage:", "");
+            this.flushInterim(emitter, sessionId, flushStage);
+        } catch (Exception ignored) {
+        }
+        try {
+            String stage = eventType.replace("stage:", "");
+            String safe = content != null ? content : "";
+            LinkedHashMap<String, Object> data = new LinkedHashMap<>();
+            data.put("type", eventType);
+            data.put("content", safe);
+            data.put("stage", stage);
+            if (sessionId != null) {
+                data.put("sessionId", sessionId);
+            }
+            emitter.send(SseEmitter.event().name("message").data(data));
+        }
+        catch (IOException | IllegalStateException e) {
+            logger.trace("[ADDRF] 阶段完成(全文)推送失败 (emitter 可能已关闭): {}", e.getMessage());
+        }
+    }
+
+    /**
+     * 2026-08-21: stage:review 事件一并向前端下发后端解析结果 {score, dimensions},
+     * 前端直接消费该单一数据源, 不再自行 re-parse review 文本(消除 P4 契约漂移)。
+     * 新增字段向后兼容(旧前端忽略未知字段)。
+     */
+    private void emitReviewComplete(SseEmitter emitter, String review, int score, Map<String, Integer> dimensions, String sessionId) {
+        if (emitter == null) {
+            return;
+        }
+        try {
+            this.flushInterim(emitter, sessionId, "review");
         } catch (Exception ignored) {
         }
         try {
@@ -1011,6 +1213,61 @@ public class AddrfPipeline {
     }
 
     /**
+     * 2026-08-21 Layer 2: Review 结构化 JSON 解析结果(单一数据源)。
+     * report 为人类可读的评审报告(Markdown), score/dimensions 为结构化评分, 前后端同源。
+     */
+    static final class ReviewJson {
+        String report;
+        int score;
+        Map<String, Integer> dimensions;
+    }
+
+    private static final ObjectMapper REVIEW_JSON_MAPPER = new ObjectMapper();
+
+    /**
+     * 2026-08-21 Layer 2: 解析 Review 的结构化 JSON 输出。
+     * 模型被 response_format=json_object 强制输出 {"report","score","dimensions"},
+     * 此处做最终权威解析; 解析失败返回 null, 由调用方降级到正则路径。
+     */
+    ReviewJson parseReviewJson(String raw) {
+        if (raw == null || raw.isBlank()) {
+            return null;
+        }
+        try {
+            JsonNode root = REVIEW_JSON_MAPPER.readTree(raw);
+            if (root == null || !root.isObject() || !root.hasNonNull("report") || !root.hasNonNull("score")) {
+                return null;
+            }
+            ReviewJson rj = new ReviewJson();
+            rj.report = root.get("report").asText();
+            rj.score = clampScore(root.get("score").asInt());
+            Map<String, Integer> dims = new LinkedHashMap<>();
+            JsonNode dimsNode = root.get("dimensions");
+            if (dimsNode != null && dimsNode.isObject()) {
+                for (String key : DIM_KEYS_ARR) {
+                    JsonNode v = dimsNode.get(key);
+                    if (v != null && v.isNumber()) {
+                        dims.put(key, clampDim(v.asInt()));
+                    }
+                }
+            }
+            rj.dimensions = dims;
+            return rj;
+        } catch (Exception e) {
+            logger.trace("[ADDRF] review JSON 解析失败, 降级正则解析: {}", e.getMessage());
+            return null;
+        }
+    }
+
+    /** Layer 1+2: stage:review 下发维度分时, 优先用结构化解析值, 否则回退文本解析 */
+    private Map<String, Integer> resolveReviewDimensions(AddrfResult r) {
+        if (r != null && r.reviewDimensions != null) {
+            return r.reviewDimensions;
+        }
+        return this.extractDimensions(r != null ? r.review : null);
+    }
+
+    /**
      * 2026-08-19: 反哺综合分 — 个人教案库(user_id 隔离)场景下, 用户主观认可应参与入库决策与检索门槛。
      * 规则:
      *  - 未评分(userScore=0)或低分(1-2 星, 已被 HITL 阻断不会到达) -> 用 LLM 分(现状兜底)
@@ -1057,7 +1314,7 @@ public class AddrfPipeline {
     /**
      * HITL 判定: 对"必须人工审核"的信号做等级分流, 而非无差别任一触发。
      *   blocked(needsHumanReview=true, 主线程注入红色警示并跳过回灌):
-     *     - 评分过低(score<60)
+     *     - 评分过低(score<70, 与自愈/回灌阈值对齐; 2026-08-23 从 <60 上调, 消除灰色带)
      *     - 存在降级输出(DEGRADED_PREFIX)
      *     - 危险关键词(合规)
      *     - 用户 1-2 星否决(userScore<=2, 与 asyncReview 结束时判定互补, 见 consolidateQuality)
@@ -1072,8 +1329,8 @@ public class AddrfPipeline {
                 + "\u5b57)\uff0c\u53ef\u80fd\u5b58\u5728\u683c\u5f0f\u6f02\u79fb\uff0c\u5efa\u8bae\u68c0\u67e5\u8868\u683c\u4e0e\u5206\u7ae0\u3002";
             logger.info("[ADDRF-HITL] \u63d0\u793a: Development \u8f93\u51fa\u8fc7\u957f ({}字, \u4ec5\u8b66\u544a\u4e0d\u963b\u65ad)", result.development.length());
         }
-        // blocked: Review 评分 < 60
-        if (result.score < 60 && result.score > 0) {
+        // blocked: Review 评分 < 70(与自愈停止/回灌门槛对齐, 消除 60-69 分「被交付、不审核、不入库」灰色带)
+        if (result.score < 70 && result.score > 0) {
             logger.info("[ADDRF-HITL] blocked: Review \u8bc4\u5206\u8fc7\u4f4e ({})", result.score);
             result.needsHumanReview = true;
             return true;
@@ -1174,6 +1431,14 @@ public class AddrfPipeline {
         return false;
     }
 
+    @PreDestroy
+    public void shutdownWindowScheduler() {
+        ScheduledExecutorService scheduler = this.windowScheduler;
+        if (scheduler != null) {
+            scheduler.shutdownNow();
+        }
+    }
+
     public static class AddrfResult {
         // volatile: 多线程可见性保证（Review异步线程写入，主线程读取）
         public volatile String analysis;
@@ -1182,6 +1447,8 @@ public class AddrfPipeline {
         public volatile String review;
         public volatile String html;
         public volatile int score;
+        // 2026-08-21 Layer 2: Review 结构化 JSON 解析出的 5 维分(clarity/accuracy/strategy/alignment/format, 0-20)
+        public volatile Map<String, Integer> reviewDimensions = null;
         // volatile: HITL标志位（asyncReview线程设置，LessonController主线程读取）
         public volatile boolean needsHumanReview = false;
         // 2026-08-21: 安全类阻断(危险关键词等合规), 与"质量类"阻断分离 ——
@@ -1190,6 +1457,8 @@ public class AddrfPipeline {
         public volatile boolean needsSafetyReview = false;
         // 阶段C: 非阻断质量提示(如超长警告), 供前端/日志展示, 不触发人工审核
         public volatile String qualityNote = null;
+        // 2026-08-21: 评分窗口是否已激活(前端展示教案后置位, 幂等保证只启动一次正式窗口)
+        public volatile boolean scoreWindowActivated = false;
         // 2026-08-18: 用户评分(1-5星, 0=未评分)。用户评分线程写入, asyncReview线程读取
         public volatile int userScore = 0;
         // 阶段C: 回灌延后到评分窗口关闭时定案(用户低分否决能正确阻断入库)。主线程置位并暂存参数。

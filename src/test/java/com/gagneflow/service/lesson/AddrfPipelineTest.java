@@ -139,6 +139,51 @@ class AddrfPipelineTest {
         assertTrue(defaultPipeline.extractDimensions("没有任何评分信息").isEmpty());
     }
 
+    @Test
+    @DisplayName("parseReviewJson parses structured JSON review (Layer 2)")
+    void parseReviewJson_ValidJson_ReturnsParsed() {
+        String json = "{\"report\": \"## 质量评估报告\\n总分: 78/100\", \"score\": 78, "
+            + "\"dimensions\": {\"clarity\": 15, \"accuracy\": 16, \"strategy\": 15, \"alignment\": 16, \"format\": 16}}";
+        AddrfPipeline.ReviewJson rj = defaultPipeline.parseReviewJson(json);
+        assertNotNull(rj);
+        assertTrue(rj.report.contains("总分: 78/100"));
+        assertEquals(78, rj.score);
+        assertEquals(5, rj.dimensions.size());
+        assertEquals(15, rj.dimensions.get("clarity"));
+        assertEquals(16, rj.dimensions.get("format"));
+    }
+
+    @Test
+    @DisplayName("parseReviewJson returns null for non-JSON text")
+    void parseReviewJson_NotJson_ReturnsNull() {
+        assertNull(defaultPipeline.parseReviewJson("这是一段自由文本，没有任何 JSON"));
+    }
+
+    @Test
+    @DisplayName("parseReviewJson returns null when report field missing")
+    void parseReviewJson_MissingReport_ReturnsNull() {
+        assertNull(defaultPipeline.parseReviewJson("{\"score\": 78}"));
+    }
+
+    @Test
+    @DisplayName("parseReviewJson clamps score to 0-100")
+    void parseReviewJson_ScoreClamped() {
+        String json = "{\"report\": \"r\", \"score\": 150, \"dimensions\": {}}";
+        AddrfPipeline.ReviewJson rj = defaultPipeline.parseReviewJson(json);
+        assertNotNull(rj);
+        assertEquals(100, rj.score);
+    }
+
+    @Test
+    @DisplayName("parseReviewJson clamps each dimension to 0-20")
+    void parseReviewJson_DimensionClamped() {
+        String json = "{\"report\": \"r\", \"score\": 50, \"dimensions\": {\"clarity\": 25, \"accuracy\": -3}}";
+        AddrfPipeline.ReviewJson rj = defaultPipeline.parseReviewJson(json);
+        assertNotNull(rj);
+        assertEquals(20, rj.dimensions.get("clarity"));
+        assertEquals(0, rj.dimensions.get("accuracy"));
+    }
+
     // ============================================================
     // extractFeedback tests
     // ============================================================
@@ -424,6 +469,20 @@ class AddrfPipelineTest {
         }
 
         @Test
+        @DisplayName("规则2(2026-08-23): Score=65 (<70 且>0) → true, 对齐回灌阈值消除灰色带")
+        void rule2_grayBand_returnsTrue() {
+            AddrfPipeline.AddrfResult r = makeResult("正常内容", 65, null, null);
+            assertTrue(defaultPipeline.shouldRequestHumanReview(r, "数学", 1L));
+        }
+
+        @Test
+        @DisplayName("规则2: Score=70 门限边界 → false")
+        void rule2_boundary70_returnsFalse() {
+            AddrfPipeline.AddrfResult r = makeResult("正常内容", 70, null, null);
+            assertFalse(defaultPipeline.shouldRequestHumanReview(r, "数学", 1L));
+        }
+
+        @Test
         @DisplayName("规则3: Design 以降级前缀开头 → true")
         void rule3_degradedDesign_returnsTrue() {
             AddrfPipeline.AddrfResult r = makeResult("正常内容", 80, "[系统提示: Design 阶段超时]", null);
@@ -581,13 +640,13 @@ class AddrfPipelineTest {
         }
 
         private Method emitMethod() throws Exception {
-            Method m = AddrfPipeline.class.getDeclaredMethod("emitInterim", SseEmitter.class, String.class, String.class);
+            Method m = AddrfPipeline.class.getDeclaredMethod("emitInterim", SseEmitter.class, String.class, String.class, String.class);
             m.setAccessible(true);
             return m;
         }
 
         private Method flushMethod() throws Exception {
-            Method m = AddrfPipeline.class.getDeclaredMethod("flushInterim", SseEmitter.class, String.class);
+            Method m = AddrfPipeline.class.getDeclaredMethod("flushInterim", SseEmitter.class, String.class, String.class);
             m.setAccessible(true);
             return m;
         }
@@ -600,7 +659,7 @@ class AddrfPipelineTest {
             SseEmitter emitter = mock(SseEmitter.class);
             Method emit = emitMethod();
             for (int i = 0; i < 4; i++) {
-                emit.invoke(p, emitter, "test_stage", "0123456789"); // 4x10=40 字
+                emit.invoke(p, emitter, "sess1", "test_stage", "0123456789"); // 4x10=40 字
             }
             verify(emitter, never()).send(any(SseEmitter.SseEventBuilder.class));
         }
@@ -613,7 +672,7 @@ class AddrfPipelineTest {
             SseEmitter emitter = mock(SseEmitter.class);
             Method emit = emitMethod();
             for (int i = 0; i < 5; i++) {
-                emit.invoke(p, emitter, "test_stage", "0123456789"); // 5x10=50 字 -> 触发
+                emit.invoke(p, emitter, "sess1", "test_stage", "0123456789"); // 5x10=50 字 -> 触发
             }
             verify(emitter, times(1)).send(any(SseEmitter.SseEventBuilder.class));
         }
@@ -626,7 +685,7 @@ class AddrfPipelineTest {
             SseEmitter emitter = mock(SseEmitter.class);
             Method emit = emitMethod();
             for (int i = 0; i < 6; i++) {
-                emit.invoke(p, emitter, "test_stage", "0123456789"); // 60 字 -> 50 时 flush 1 次, 剩 10 字
+                emit.invoke(p, emitter, "sess1", "test_stage", "0123456789"); // 60 字 -> 50 时 flush 1 次, 剩 10 字
             }
             verify(emitter, times(1)).send(any(SseEmitter.SseEventBuilder.class));
         }
@@ -638,10 +697,10 @@ class AddrfPipelineTest {
             resetBuffers(p);
             SseEmitter emitter = mock(SseEmitter.class);
             Method emit = emitMethod();
-            emit.invoke(p, emitter, "test_stage", "残余内容"); // <50 字, 不触发
+            emit.invoke(p, emitter, "sess1", "test_stage", "残余内容"); // <50 字, 不触发
             verify(emitter, never()).send(any(SseEmitter.SseEventBuilder.class));
             Method flush = flushMethod();
-            flush.invoke(p, emitter, "test_stage");
+            flush.invoke(p, emitter, "sess1", "test_stage");
             verify(emitter, times(1)).send(any(SseEmitter.SseEventBuilder.class));
         }
 
@@ -654,13 +713,13 @@ class AddrfPipelineTest {
             Method emit = emitMethod();
             // 第一次: 触发时间记录
             for (int i = 0; i < 5; i++) {
-                emit.invoke(p, emitter, "test_stage", "0123456789"); // 50 字 flush
+                emit.invoke(p, emitter, "sess1", "test_stage", "0123456789"); // 50 字 flush
             }
             verify(emitter, times(1)).send(any(SseEmitter.SseEventBuilder.class));
             // 等超过 500ms 兜底阈值
             Thread.sleep(600L);
             // 再推 10 字: <50 但超时 -> flush
-            emit.invoke(p, emitter, "test_stage", "0123456789");
+            emit.invoke(p, emitter, "sess1", "test_stage", "0123456789");
             verify(emitter, times(2)).send(any(SseEmitter.SseEventBuilder.class));
         }
 
@@ -672,9 +731,9 @@ class AddrfPipelineTest {
             SseEmitter emitter = mock(SseEmitter.class);
             Method emit = emitMethod();
             for (int i = 0; i < 5; i++) {
-                emit.invoke(p, emitter, "stage_a", "0123456789"); // stage_a 50 字 flush
+                emit.invoke(p, emitter, "sess1", "stage_a", "0123456789"); // stage_a 50 字 flush
             }
-            emit.invoke(p, emitter, "stage_b", "0123456789"); // stage_b 10 字不 flush
+            emit.invoke(p, emitter, "sess1", "stage_b", "0123456789"); // stage_b 10 字不 flush
             verify(emitter, times(1)).send(any(SseEmitter.SseEventBuilder.class));
         }
     }
@@ -795,10 +854,10 @@ class AddrfPipelineTest {
                     (java.util.Map<String, AddrfPipeline.AddrfResult>) results.get(p);
             map.put("sid_window_1", r);
 
-            // 反射调用 private scheduleScoreWindowClose
-            Method m = AddrfPipeline.class.getDeclaredMethod("scheduleScoreWindowClose", String.class);
+            // 反射调用 private scheduleScoreWindowClose(2026-08-21 起带窗口时长参数)
+            Method m = AddrfPipeline.class.getDeclaredMethod("scheduleScoreWindowClose", String.class, long.class);
             m.setAccessible(true);
-            m.invoke(p, "sid_window_1");
+            m.invoke(p, "sid_window_1", SHORT_WINDOW_SECONDS);
 
             // 窗口 1s, 等待 2s 后应已移除
             Thread.sleep((SHORT_WINDOW_SECONDS + 1) * 1000L);
@@ -806,12 +865,35 @@ class AddrfPipelineTest {
         }
 
         @Test
-        @DisplayName("scheduleScoreWindowClose(null) 不抛异常")
+        @DisplayName("scheduleScoreWindowClose(null, n) 不抛异常")
         void scheduleWindowClose_nullSafe() throws Exception {
             shortenScoreWindow(defaultPipeline);
-            Method m = AddrfPipeline.class.getDeclaredMethod("scheduleScoreWindowClose", String.class);
+            Method m = AddrfPipeline.class.getDeclaredMethod("scheduleScoreWindowClose", String.class, long.class);
             m.setAccessible(true);
-            assertDoesNotThrow(() -> m.invoke(defaultPipeline, (String) null));
+            assertDoesNotThrow(() -> m.invoke(defaultPipeline, (String) null, 1L));
+        }
+
+        @Test
+        @DisplayName("activateScoreWindow 幂等: 只启动一次正式窗口")
+        void activateScoreWindow_idempotent() throws Exception {
+            shortenScoreWindow(defaultPipeline);
+            AddrfPipeline p = defaultPipeline;
+            AddrfPipeline.AddrfResult r = new AddrfPipeline.AddrfResult();
+            Field results = AddrfPipeline.class.getDeclaredField("activeResults");
+            results.setAccessible(true);
+            @SuppressWarnings("unchecked")
+            java.util.Map<String, AddrfPipeline.AddrfResult> map =
+                    (java.util.Map<String, AddrfPipeline.AddrfResult>) results.get(p);
+            map.put("sid_activate_1", r);
+
+            // 激活两次: scoreWindowActivated 只应置位一次(第二次激活被幂等拦截)
+            p.activateScoreWindow("sid_activate_1");
+            p.activateScoreWindow("sid_activate_1");
+            assertTrue(r.scoreWindowActivated, "激活后标志应置位");
+
+            // 窗口到期后移除(短窗口 1s)
+            Thread.sleep((SHORT_WINDOW_SECONDS + 1) * 1000L);
+            assertNull(p.getActiveResult("sid_activate_1"), "激活后正式窗口到期应移除 entry");
         }
     }
 

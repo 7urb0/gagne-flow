@@ -53,7 +53,6 @@ class ChatSessionServiceTest {
         injectField("sessionMessageRepo", sessionMessageRepo);
         // Inject config values
         injectField("maxIdleTime", Duration.ofHours(24));
-        injectField("maxWindowSize", 6);
         injectField("maxWindowTokens", 2000);
 
         when(redisTemplate.opsForValue()).thenReturn(valueOps);
@@ -93,7 +92,7 @@ class ChatSessionServiceTest {
         @DisplayName("getOrCreate returns existing session from Redis")
         void getOrCreateExistingSession() {
             ChatSession existing = new ChatSession(SESSION_ID);
-            existing.addMessage("hello", "hi there", 6, tokenCounter);
+            existing.addMessage("hello", "hi there", tokenCounter);
             String json = serializeSession(existing);
 
             when(valueOps.get(anyString())).thenReturn(json);
@@ -123,7 +122,7 @@ class ChatSessionServiceTest {
         @DisplayName("addMessage persists user + assistant pair")
         void addMessageSavesPair() {
             ChatSession session = new ChatSession(SESSION_ID);
-            session.addMessage("q1", "a1", 6, tokenCounter);
+            session.addMessage("q1", "a1", tokenCounter);
             String json = serializeSession(session);
             when(valueOps.get(anyString())).thenReturn(json);
             when(redisTemplate.execute(any(SessionCallback.class))).thenReturn("marker");
@@ -154,8 +153,8 @@ class ChatSessionServiceTest {
         @DisplayName("getHistory returns message history from session")
         void getHistoryReturnsMessages() {
             ChatSession session = new ChatSession(SESSION_ID);
-            session.addMessage("q1", "a1", 6, tokenCounter);
-            session.addMessage("q2", "a2", 6, tokenCounter);
+            session.addMessage("q1", "a1", tokenCounter);
+            session.addMessage("q2", "a2", tokenCounter);
             String json = serializeSession(session);
             when(valueOps.get(anyString())).thenReturn(json);
             when(redisTemplate.expire(anyString(), any(Duration.class))).thenReturn(true);
@@ -168,7 +167,7 @@ class ChatSessionServiceTest {
         @DisplayName("clearHistory empties message list")
         void clearHistoryEmptiesMessages() {
             ChatSession session = new ChatSession(SESSION_ID);
-            session.addMessage("q1", "a1", 6, tokenCounter);
+            session.addMessage("q1", "a1", tokenCounter);
             String json = serializeSession(session);
             when(valueOps.get(anyString())).thenReturn(json);
 
@@ -194,9 +193,9 @@ class ChatSessionServiceTest {
         @DisplayName("getMessagePairCount returns correct count")
         void getMessagePairCountCorrect() {
             ChatSession session = new ChatSession(SESSION_ID);
-            session.addMessage("q1", "a1", 6, tokenCounter);
-            session.addMessage("q2", "a2", 6, tokenCounter);
-            session.addMessage("q3", "a3", 6, tokenCounter);
+            session.addMessage("q1", "a1", tokenCounter);
+            session.addMessage("q2", "a2", tokenCounter);
+            session.addMessage("q3", "a3", tokenCounter);
             String json = serializeSession(session);
             when(valueOps.get(anyString())).thenReturn(json);
 
@@ -379,7 +378,7 @@ class ChatSessionServiceTest {
         @DisplayName("replaceHistory replaces all messages and sets summary")
         void replaceHistoryReplacesAll() {
             ChatSession session = new ChatSession(SESSION_ID);
-            session.addMessage("old_q", "old_a", 6, tokenCounter);
+            session.addMessage("old_q", "old_a", tokenCounter);
             String json = serializeSession(session);
             when(valueOps.get(anyString())).thenReturn(json);
             when(redisTemplate.execute(any(SessionCallback.class))).thenReturn("marker");
@@ -534,7 +533,7 @@ class ChatSessionServiceTest {
             ChatSession session = new ChatSession(SESSION_ID);
             // Add many messages to exceed token budget
             for (int i = 0; i < 20; i++) {
-                session.addMessage("a".repeat(200), "b".repeat(200), 100, tokenCounter);
+                session.addMessage("a".repeat(200), "b".repeat(200), tokenCounter);
             }
             assertTrue(session.getMessageHistory().size() > 10);
 

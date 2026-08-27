@@ -129,6 +129,9 @@ export interface StageCompleteEvent {
   updated?: boolean;
   /** B1 修复: 后端在 stage:format 事件中下发的真实教案 sessionId */
   sessionId?: string;
+  /** 2026-08-21 Layer2: 后端在 stage:review 事件下发的结构化评分(单一数据源, 前端不再 re-parse) */
+  score?: number;
+  dimensions?: ScoreDimensions;
 }
 
 export interface AnalysisClarifyEvent {

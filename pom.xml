@@ -79,6 +79,12 @@
             <groupId>com.alibaba.cloud.ai</groupId>
             <artifactId>spring-ai-alibaba-agent-framework</artifactId>
         </dependency>
+        <!-- 2026-08-23 quick 直出 HTML: 后端 HTML 白名单消毒(Jsoup), 确保存档/PDF/回灌源头干净(前端 DOMPurify 兜不住下游) -->
+        <dependency>
+            <groupId>org.jsoup</groupId>
+            <artifactId>jsoup</artifactId>
+            <version>1.18.1</version>
+        </dependency>
         <dependency>
             <groupId>org.springframework.boot</groupId>
             <artifactId>spring-boot-starter-web</artifactId>

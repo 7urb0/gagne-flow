@@ -29,7 +29,7 @@ implements Serializable {
         this.lastAccessTime = Instant.now();
     }
 
-    public synchronized void addMessage(String userQuestion, String aiAnswer, int maxWindowSize, TokenCounter tokenCounter) {
+    public synchronized void addMessage(String userQuestion, String aiAnswer, TokenCounter tokenCounter) {
         HashMap<String, String> userMsg = new HashMap<String, String>();
         userMsg.put("role", "user");
         userMsg.put("content", userQuestion);

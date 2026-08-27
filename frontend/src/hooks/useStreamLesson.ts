@@ -2,13 +2,23 @@ import { useCallback, useRef } from 'react';
 import { authStorage } from '@/lib/api';
 import { readSse } from '@/lib/sse';
 import { useLessonStore, type StageName } from '@/store/lesson';
-import type { LessonSseEvent } from '@/types';
+import type { LessonSseEvent, ScoreDimensions } from '@/types';
 
 export interface StreamLessonHandlers {
   /** 流式 chunk (阶段内聚合由调用方处理) */
   onChunk?: (stage: string, chunk: string) => void;
   /** 阶段完成 (stage:analysis|design|development|review|format) */
-  onStageComplete?: (stage: StageName, content: string, extra?: { updated?: boolean; sessionId?: string }) => void;
+  onStageComplete?: (
+    stage: StageName,
+    content: string,
+    extra?: {
+      updated?: boolean;
+      sessionId?: string;
+      /** 2026-08-21 Layer2: stage:review 事件附带的结构化评分(后端解析, 单一数据源) */
+      score?: number;
+      dimensions?: ScoreDimensions;
+    },
+  ) => void;
   /** 意图澄清 */
   onClarify?: (questions: string, token: string) => void;
   /** copilot 分步确认 */
@@ -59,11 +69,18 @@ export function useStreamLesson() {
                 content?: string;
                 updated?: boolean;
                 sessionId?: string;
+                score?: number;
+                dimensions?: ScoreDimensions;
               };
               handlers.onStageComplete?.(
                 e.stage as StageName,
                 e.content || '',
-                { updated: e.updated, sessionId: e.sessionId },
+                {
+                  updated: e.updated,
+                  sessionId: e.sessionId,
+                  score: e.score,
+                  dimensions: e.dimensions,
+                },
               );
             } else if (type === 'analysis_clarify') {
               const e = m as { questions: string; token: string };

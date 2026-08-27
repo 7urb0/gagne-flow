@@ -116,4 +116,28 @@ class MilvusClientFactoryTest {
         assertThrows(RuntimeException.class,
                 () -> ReflectionTestUtils.invokeMethod(f, "createIndexes", client, "biz"));
     }
+
+    @Test
+    void createIndexes_personalPlans_addsScoreIndex() throws Exception {
+        MilvusClientFactory f = newFactory();
+        MilvusServiceClient client = mock(MilvusServiceClient.class);
+        R r = mock(R.class);
+        when(r.getStatus()).thenReturn(0);
+        when(client.createIndex(any(CreateIndexParam.class))).thenReturn(r);
+        // personal_plans 需额外建 metadata[_score] 数值索引(方向①, 加速 _score>=85 过滤)
+        ReflectionTestUtils.invokeMethod(f, "createIndexes", client, "personal_plans");
+        verify(client, times(3)).createIndex(any(CreateIndexParam.class));
+    }
+
+    @Test
+    void createIndexes_biz_doesNotAddScoreIndex() throws Exception {
+        MilvusClientFactory f = newFactory();
+        MilvusServiceClient client = mock(MilvusServiceClient.class);
+        R r = mock(R.class);
+        when(r.getStatus()).thenReturn(0);
+        when(client.createIndex(any(CreateIndexParam.class))).thenReturn(r);
+        // biz 库无 _score, 只建 vector + metadata(varchar) 两个索引
+        ReflectionTestUtils.invokeMethod(f, "createIndexes", client, "biz");
+        verify(client, times(2)).createIndex(any(CreateIndexParam.class));
+    }
 }

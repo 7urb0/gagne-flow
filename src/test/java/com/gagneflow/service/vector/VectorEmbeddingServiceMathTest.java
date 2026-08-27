@@ -5,6 +5,7 @@ import org.junit.jupiter.api.Nested;
 import org.junit.jupiter.api.Test;
 
 import java.util.ArrayList;
+import java.util.Collections;
 import java.util.List;
 
 import static org.junit.jupiter.api.Assertions.*;
@@ -112,7 +113,9 @@ class VectorEmbeddingServiceMathTest {
                     new RuntimeException("DashScope timeout"));
 
             assertNotNull(result);
-            assertTrue(result.isEmpty(), "熔断降级应返回空列表而非零向量");
+            // P2-4: 改为 1024 维零向量(而非空列表), 防止 Milvus 维度校验导致整档入库失败
+            assertEquals(1024, result.size(), "熔断降级应返回 1024 维零向量");
+            assertTrue(result.stream().allMatch(v -> v.floatValue() == 0.0f), "零向量所有分量应为 0");
         }
 
         @Test
@@ -123,7 +126,33 @@ class VectorEmbeddingServiceMathTest {
                     null, new RuntimeException("Connection refused"));
 
             assertNotNull(result);
-            assertTrue(result.isEmpty(), "熔断降级 null 内容也应返回空列表");
+            assertEquals(1024, result.size(), "熔断降级 null 内容也应返回 1024 维零向量");
+            assertTrue(result.stream().allMatch(v -> v.floatValue() == 0.0f));
+        }
+
+        @Test
+        @DisplayName("批量熔断 fallback 返回 N 个 1024 维零向量(P4-3)")
+        void batchFallback_shouldReturnNZeroVectors() {
+            VectorEmbeddingService svc = new VectorEmbeddingService();
+            List<String> contents = List.of("a", "b", "c");
+            List<List<Float>> result = svc.generateEmbeddingsFallback(
+                    contents, new RuntimeException("batch timeout"));
+
+            assertNotNull(result);
+            assertEquals(contents.size(), result.size(), "每个输入应返回一个向量");
+            assertTrue(result.stream().allMatch(vec ->
+                    vec.size() == 1024
+                            && vec.stream().allMatch(v -> v.floatValue() == 0.0f)));
+        }
+
+        @Test
+        @DisplayName("批量熔断 fallback 空输入返回空列表")
+        void batchFallback_emptyContent_shouldReturnEmptyList() {
+            VectorEmbeddingService svc = new VectorEmbeddingService();
+            List<List<Float>> result = svc.generateEmbeddingsFallback(
+                    Collections.emptyList(), new RuntimeException("batch timeout"));
+            assertNotNull(result);
+            assertTrue(result.isEmpty());
         }
     }
 }

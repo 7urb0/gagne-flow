@@ -47,6 +47,8 @@ public class VectorIndexService {
     private DocumentReaderFactory readerFactory;
     @Autowired
     private VectorSearchService vectorSearchService;
+    @Autowired
+    private com.gagneflow.config.MilvusProperties milvusProperties;
     @Value(value="${file.upload.path}")
     private String uploadPath;
 
@@ -158,10 +160,19 @@ logger.info("\u6587\u4ef6\u7d22\u5f15\u5b8c\u6210: {}, \u5171 {} \u4e2a\u5206\u7
      * @param subject 学科
      * @param score   Review 评分 (0-100)
      */
+    /**
+     * 反哺教案入库统一质量门槛(与检索端共用配置 lesson-plan-min-score, 默认 85)。
+     * 配置缺失时回落 VectorSearchService 默认常量, 避免两处魔法数再次漂移。
+     */
+    private int lessonPlanMinScore() {
+        return this.milvusProperties != null && this.milvusProperties.getLessonPlanMinScore() != null
+                ? this.milvusProperties.getLessonPlanMinScore() : VectorSearchService.MIN_LESSON_PLAN_SCORE;
+    }
+
     public void indexLessonPlan(String html, Long userId, String subject, int score) {
         // 1. 评分阈值检查
-        if (score < 70) {
-            logger.info("[回灌跳过] 评分 {} < 70，质量不达标", score);
+        if (score < this.lessonPlanMinScore()) {
+            logger.info("[回灌跳过] 评分 {} < {}，质量不达标", score, this.lessonPlanMinScore());
             return;
         }
         // 2. 提取纯文本
@@ -201,7 +212,7 @@ logger.info("\u6587\u4ef6\u7d22\u5f15\u5b8c\u6210: {}, \u5171 {} \u4e2a\u5206\u7
             return;
         }
         // 5+6. 2026-08-19 二期: 抽公共入库管道 chunkAndIndex(向量化+写入个人库)
-        this.chunkAndIndex(chunks, docId, com.gagneflow.constant.MilvusConstants.PERSONAL_PLANS_COLLECTION, "回灌",
+        this.chunkAndIndex(chunks, docId, this.personalPlansCollection(), "回灌",
                 (chunk, total) -> buildLessonPlanMetadata(userId, subject, score, chunk, total));
         logger.info("[回灌完成] 教案已回灌到个人库: {} 分片, subject={}, score={}, uid={}",
                 chunks.size(), subject, score, userId);
@@ -228,8 +239,9 @@ logger.info("\u6587\u4ef6\u7d22\u5f15\u5b8c\u6210: {}, \u5171 {} \u4e2a\u5206\u7
             return "纯文本过短 (" + plainText.length() + " 字 < 500 字)";
         }
         // 核心要素关键词（按 addrf 模板的强约束输出格式确定）
+        // 2026-08-22: 质量评估(Review)已不入教案正文, 核心要素从 4 个减为 3 个
         String[] coreElements = {
-            "教学目标", "教学重难点", "教学过程", "教学评估"
+            "教学目标", "教学重难点", "教学过程"
         };
         int hitCount = 0;
         for (String element : coreElements) {
@@ -237,8 +249,9 @@ logger.info("\u6587\u4ef6\u7d22\u5f15\u5b8c\u6210: {}, \u5171 {} \u4e2a\u5206\u7
                 hitCount++;
             }
         }
-        if (hitCount < 3) {
-            return "结构不完整: 核心要素命中 " + hitCount + "/4 (至少需 3 个)";
+        // 2026-08-22: 要素 4->3, 命中阈值同步 3->2(宁缺毋滥语义不变)
+        if (hitCount < 2) {
+            return "结构不完整: 核心要素命中 " + hitCount + "/3 (至少需 2 个)";
         }
         return null;
     }
@@ -270,6 +283,15 @@ logger.info("\u6587\u4ef6\u7d22\u5f15\u5b8c\u6210: {}, \u5171 {} \u4e2a\u5206\u7
         if (loadResponse.getStatus() != 0 && loadResponse.getStatus() != 65535) {
             logger.warn("\u52a0\u8f7d collection \u65f6\u51fa\u73b0\u5f02\u5e38: {}", (Object)loadResponse.getMessage());
         }
+    }
+
+    /** 2026-08-23: 个人教案库 collection 名(优先读配置, 兜底常量) */
+    private String personalPlansCollection() {
+        if (this.milvusProperties != null && this.milvusProperties.getPersonalPlansCollection() != null
+                && !this.milvusProperties.getPersonalPlansCollection().isEmpty()) {
+            return this.milvusProperties.getPersonalPlansCollection();
+        }
+        return com.gagneflow.constant.MilvusConstants.PERSONAL_PLANS_COLLECTION;
     }
 
     private void deleteExistingData(String normalizedPath, Long userId) {

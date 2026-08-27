@@ -12,7 +12,6 @@ import java.util.concurrent.Executors;
 import java.util.concurrent.ScheduledExecutorService;
 import java.util.concurrent.ThreadPoolExecutor;
 import java.util.concurrent.TimeUnit;
-import java.util.concurrent.atomic.AtomicBoolean;
 
 import com.alibaba.cloud.ai.dashscope.api.DashScopeApi;
 import com.alibaba.cloud.ai.dashscope.chat.DashScopeChatModel;
@@ -84,8 +83,6 @@ public class LessonController {
 
     private final ConcurrentHashMap<Long, Boolean> lessonLocks = new ConcurrentHashMap<>();
     private final ConcurrentHashMap<String, BlockingQueue<String>> copilotQueues = new ConcurrentHashMap<>();
-    // P1修复: SSE 完成状态保护，防止重复 complete
-    private final AtomicBoolean emitterCompleted = new AtomicBoolean(false);
     /** 教案存档保留天数(与 LessonPlanTools.archiveTtlDays 对齐)，用于 PDF 404 提示 */
     @Value("${gagneflow.lesson.archive-ttl-days:7}")
     private long lessonArchiveTtlDays = 7L;
@@ -169,35 +166,45 @@ public class LessonController {
             String sessionCtx = this.buildSessionContextForAddrf(uid, sid, req);
             // 2026-08-18: 表单个性化偏好写入 LTM(USER_EXPLICIT, 进全局集合), 下次生成自动复用
             this.storeFormPreferencesToLtm(req, uid, sid);
-            AddrfPipeline.AddrfResult result = this.addrfPipeline.execute(
-                    req, new DashScopeChatModelPort(model), emitter, req.getMode(), this.copilotQueues, sessionCtx, uid, sid);
-            String html = result.html != null ? result.html : "<p>生成失败</p>";
-            // 等待 Review 后台线程完成，拿到真实评分与 HITL 标志（score 由 asyncReview 异步写入）
-            this.addrfPipeline.awaitReview(result, 240, sid);
-            // HITL: 教案质量人工审核（必须在 awaitReview 之后判断，否则 score/needsHumanReview 尚未就绪）
-            if (result.needsHumanReview) {
-                String hitlMsg = "\u26a0 \u7cfb\u7edf\u68c0\u6d4b\u5230\u8be5\u6559\u6848\u53ef\u80fd\u5b58\u5728\u8d28\u91cf\u95ee\u9898\uff08\u8bc4\u5206: "
-                    + result.score + "\uff09\uff0c\u5efa\u8bae\u4eba\u5de5\u590d\u6838\u540e\u4f7f\u7528\u3002";
-                logger.warn("[ADDRF-HITL] 教案需人工审核: uid={}, subject={}, score={}",
-                    uid, req.getSubject(), result.score);
-                // 将提醒注入 HTML
-                html = "<div class=\"hitl-warning\" style=\"border:2px solid #ff4444;padding:12px;margin:12px 0;background:#fff5f5;border-radius:8px;\">"
-                    + hitlMsg + "</div>" + html;
-                // 记录 HITL 指标
-                if (this.pipelineMetrics != null) {
-                    this.pipelineMetrics.recordHitlTrigger(req.getSubject(), uid);
-                }
+            boolean quick = "quick".equalsIgnoreCase(req.getMode());
+            AddrfPipeline.AddrfResult result;
+            if (quick) {
+                // quick 独立路径: 单次直出, 不做 Review/HITL/回灌/评分窗口 (2026-08-23)
+                result = this.addrfPipeline.executeQuick(
+                        req, new DashScopeChatModelPort(model), emitter, sessionCtx, uid, sid);
             } else {
-                // 非 HITL: 教案质量达标 -> 计划回灌(阶段C: 延后到评分窗口关闭时执行,
-                // 以便用户低分否决能在窗口内正确阻断入库; 该用户待窗口关闭由 backfillLessonPlan 实际入库)
-                try {
-                    result.scheduleBackfill = true;
-                    result.backfillUid = uid;
-                    result.backfillSubject = req.getSubject();
-                    logger.info("[ADDRF] 教案待回灌(评分窗关闭时入库): score={}, subject={}, uid={}, sid={}",
-                        result.score, req.getSubject(), uid, sid);
-                } catch (Exception e) {
-                    logger.warn("[ADDRF] 教案回灌计划失败（不影响主流程）: {}", e.getMessage());
+                result = this.addrfPipeline.execute(
+                        req, new DashScopeChatModelPort(model), emitter, req.getMode(), this.copilotQueues, sessionCtx, uid, sid);
+            }
+            String html = result.html != null ? result.html : "<p>生成失败</p>";
+            if (!quick) {
+                // 等待 Review 后台线程完成，拿到真实评分与 HITL 标志（score 由 asyncReview 异步写入）
+                this.addrfPipeline.awaitReview(result, 240, sid);
+                // HITL: 教案质量人工审核（必须在 awaitReview 之后判断，否则 score/needsHumanReview 尚未就绪）
+                if (result.needsHumanReview) {
+                    String hitlMsg = "\u26a0 \u7cfb\u7edf\u68c0\u6d4b\u5230\u8be5\u6559\u6848\u53ef\u80fd\u5b58\u5728\u8d28\u91cf\u95ee\u9898\uff08\u8bc4\u5206: "
+                        + result.score + "\uff09\uff0c\u5efa\u8bae\u4eba\u5de5\u590d\u6838\u540e\u4f7f\u7528\u3002";
+                    logger.warn("[ADDRF-HITL] 教案需人工审核: uid={}, subject={}, score={}",
+                        uid, req.getSubject(), result.score);
+                    // 将提醒注入 HTML
+                    html = "<div class=\"hitl-warning\" style=\"border:2px solid #ff4444;padding:12px;margin:12px 0;background:#fff5f5;border-radius:8px;\">"
+                        + hitlMsg + "</div>" + html;
+                    // 记录 HITL 指标
+                    if (this.pipelineMetrics != null) {
+                        this.pipelineMetrics.recordHitlTrigger(req.getSubject(), uid);
+                    }
+                } else {
+                    // 非 HITL: 教案质量达标 -> 计划回灌(阶段C: 延后到评分窗口关闭时执行,
+                    // 以便用户低分否决能在窗口内正确阻断入库; 该用户待窗口关闭由 backfillLessonPlan 实际入库)
+                    try {
+                        result.scheduleBackfill = true;
+                        result.backfillUid = uid;
+                        result.backfillSubject = req.getSubject();
+                        logger.info("[ADDRF] 教案待回灌(评分窗关闭时入库): score={}, subject={}, uid={}, sid={}",
+                            result.score, req.getSubject(), uid, sid);
+                    } catch (Exception e) {
+                        logger.warn("[ADDRF] 教案回灌计划失败（不影响主流程）: {}", e.getMessage());
+                    }
                 }
             }
             String summary = this.extractLessonSummary(result);
@@ -345,6 +352,20 @@ public class LessonController {
     }
 
     /**
+     * 2026-08-21: 评分窗口"延迟激活" — 前端将教案展示给用户(打开工作台)时调用。
+     * 幂等; 若 sessionId 不在 activeResults(已评分释放/兜底窗口关闭)则 404, 前端可忽略。
+     */
+    @PostMapping(value = {"/lesson_plan/activate"})
+    public ResponseEntity<?> activateScoreWindow(@RequestBody Map<String, String> body) {
+        String sessionId = body.get("sessionId");
+        if (sessionId == null) {
+            return ResponseEntity.badRequest().body(Map.of("error", "sessionId required"));
+        }
+        this.addrfPipeline.activateScoreWindow(sessionId);
+        return ResponseEntity.ok(Map.of("ok", true));
+    }
+
+    /**
      * 2026-08-18: 用户评分(1-5星)。Format 完成后推送评分 UI, 用户在 Review 完成前打分。
      * 用户低分(1-2星)一票否决 -> 无论 LLM 评分, 标记人工审核。
      */
@@ -411,10 +432,10 @@ public class LessonController {
     }
 
     private void sendAndComplete(SseEmitter emitter, SseMessage msg) {
-        if (!this.emitterCompleted.compareAndSet(false, true)) {
-            logger.debug("SSE emitter already completed, skipping");
-            return;
-        }
+        // P0-2: 原实现用 Controller 单例字段 AtomicBoolean emitterCompleted 做防重, 第一单完成后
+        // 永久置 true 且无复位, 导致后续所有请求的 done/error 被吞, 前端挂到 600s 超时。
+        // 每个请求有独立 emitter, sendAndComplete 在该请求内只调用一次; 依赖 SseEmitter 自身的
+        // IllegalStateException(重复 complete/send) 兜底即可, 删除共享字段。
         try {
             emitter.send(SseEmitter.event().name("message").data(msg, MediaType.APPLICATION_JSON));
             emitter.complete();

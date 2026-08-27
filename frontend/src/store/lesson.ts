@@ -23,8 +23,10 @@ export interface LessonResultItem {
   /** 生成的展示标题 */
   title: string;
   createdAt: number;
-  userScored: boolean;
+  /** 2026-08-21 Layer2: LLM 结构化评分(来自 stage:review 事件, 单一数据源) */
   llmScore?: number;
+  /** 2026-08-21 Layer2: LLM 五维评分(后端解析, 前端直接消费, 不 re-parse review 文本) */
+  reviewDimensions?: import('@/types').ScoreDimensions;
   reviewText?: string;
   /** 是否需要人工复核(后端 HITL 红字警告已注入 html) */
   needsHumanReview?: boolean;
@@ -68,6 +70,11 @@ interface LessonState {
   setActiveSessionId: (id: string | null) => void;
   addResult: (r: LessonResultItem) => void;
   updateResultHtml: (sessionId: string, html: string) => void;
+  /** P1-1: 更新已存在结果的评估数据(stage:review 晚于 addResult 到达, 需原位回填 llmScore/dimensions/reviewText) */
+  updateResultAssessment: (
+    sessionId: string,
+    a: { llmScore?: number; reviewDimensions?: import('@/types').ScoreDimensions; reviewText?: string },
+  ) => void;
   setActiveResultIndex: (i: number) => void;
   setScoreSubmitted: (v: boolean) => void;
   setLastError: (msg: string | null) => void;
@@ -141,6 +148,19 @@ export const useLessonStore = create<LessonState>((set) => ({
     set((s) => ({
       results: s.results.map((r) =>
         r.sessionId === sessionId ? { ...r, html } : r,
+      ),
+    })),
+  updateResultAssessment: (sessionId, a) =>
+    set((s) => ({
+      results: s.results.map((r) =>
+        r.sessionId === sessionId
+          ? {
+              ...r,
+              ...(a.llmScore != null ? { llmScore: a.llmScore } : {}),
+              ...(a.reviewDimensions ? { reviewDimensions: a.reviewDimensions } : {}),
+              ...(a.reviewText != null && a.reviewText !== '' ? { reviewText: a.reviewText } : {}),
+            }
+          : r,
       ),
     })),
   setActiveResultIndex: (i) => set({ activeResultIndex: i }),

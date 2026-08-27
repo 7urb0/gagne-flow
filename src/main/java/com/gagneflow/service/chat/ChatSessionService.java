@@ -40,8 +40,6 @@ public class ChatSessionService {
     private SessionMessageRepository sessionMessageRepo;
     @Value(value="${gagneflow.session.max-idle:24h}")
     private Duration maxIdleTime;
-    @Value(value="${gagneflow.session.max-window-size:6}")
-    private int maxWindowSize;
     @Value(value="${gagneflow.memory.max-window-tokens:2000}")
     private int maxWindowTokens;
 
@@ -75,7 +73,7 @@ public class ChatSessionService {
     @Transactional
     public void addMessage(Long userId, String sessionId, String userQuestion, String aiAnswer) {
         this.withOptimisticLock(userId, sessionId, session -> {
-            session.addMessage(userQuestion, aiAnswer, this.maxWindowSize, this.tokenCounter);
+            session.addMessage(userQuestion, aiAnswer, this.tokenCounter);
             this.trimByTokenBudget((ChatSession)session);
             return null;
         });

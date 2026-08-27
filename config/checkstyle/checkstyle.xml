@@ -13,6 +13,12 @@
     <module name="FileTabCharacter"/>
     <module name="NewlineAtEndOfFile"/>
 
+    <!-- 长度限制（宽松）— Checker 级 FileSetCheck，必须放在 TreeWalker 之外 -->
+    <module name="LineLength">
+        <property name="max" value="140"/>
+        <property name="ignorePattern" value="^package|^import|@see|@link"/>
+    </module>
+
     <module name="TreeWalker">
         <!-- 命名规范 -->
         <module name="LocalVariableName"/>
@@ -34,12 +40,6 @@
         <module name="EmptyBlock"/>
         <module name="EmptyLineSeparator">
             <property name="allowNoEmptyLineBetweenFields" value="true"/>
-        </module>
-
-        <!-- 长度限制（宽松） -->
-        <module name="LineLength">
-            <property name="max" value="140"/>
-            <property name="ignorePattern" value="^package|^import|@see|@link"/>
         </module>
     </module>
 </module>

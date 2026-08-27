@@ -1,8 +1,8 @@
-import { useMemo, useState } from 'react';
-import { AlertTriangle, Download, Edit3, FileText, ListOrdered, Pencil, Save, X } from 'lucide-react';
+import { useEffect, useMemo, useState } from 'react';
+import { AlertTriangle, CheckCheck, Download, Edit3, FileText, ListOrdered, Pencil, Save, X } from 'lucide-react';
 import { toast } from 'sonner';
 import { Button } from '@/components/ui/button';
-import { downloadPdf } from '@/api/lesson';
+import { activateLesson, downloadPdf } from '@/api/lesson';
 import type { LessonResultItem } from '@/store/lesson';
 import { useLessonStore } from '@/store/lesson';
 import { sanitizeLessonHtml } from '@/lib/lessonHtml';
@@ -84,11 +84,32 @@ export function Workbench({
   const [editText, setEditText] = useState('');
   const [downloading, setDownloading] = useState(false);
 
-  // E1: LLM 质量评估容错解析 (标准 + 宽松兜底), 失败给明确提示
+  // 2026-08-21: 评分窗口"延迟激活" — 教案展示给用户即激活正式评分窗口(后端从此刻计时)。
+  // 重新生成场景下, 新教案被暂存时窗口不开始计时, 用户处理完旧教案打开新教案才计时。
+  useEffect(() => {
+    if (result.sessionId) {
+      void activateLesson(result.sessionId);
+    }
+  }, [result.sessionId]);
+
+  // 2026-08-21 Layer2: 优先消费后端 stage:review 事件下发的结构化评分(单一数据源),
+  // 前端不再 re-parse review 文本; 仅当结构化缺失时才回退文本解析(兼容旧版本教案)。
   const llmScore = useMemo(() => {
+    if (result.llmScore != null) {
+      const total = result.llmScore;
+      if (result.reviewDimensions) {
+        return { total, dims: result.reviewDimensions };
+      }
+      // 有总分无维度: 均摊(与 parseScore 行为一致)
+      const dims = {} as import('@/types').ScoreDimensions;
+      for (const k of ['clarity', 'accuracy', 'strategy', 'alignment', 'format'] as const) {
+        dims[k] = Math.round(total / 5);
+      }
+      return { total, dims };
+    }
     if (!result.reviewText) return null;
     return parseScoreLenient(result.reviewText) ?? parseScore(result.reviewText);
-  }, [result.reviewText]);
+  }, [result.llmScore, result.reviewDimensions, result.reviewText]);
 
   // 2026-08-21: HITL 人工复核确认闸门 —— 后端将质量警告注入 html(hitl-warning),
   // 分数不达标但用户显式"保留并使用"时, 允许保留(个人库), 但不可进入共享知识库。
@@ -99,6 +120,16 @@ export function Workbench({
   const kept = useLessonStore((s) => s.keepDecided[result.sessionId] ?? false);
   const setKeepDecided = useLessonStore((s) => s.setKeepDecided);
   const removeResult = useLessonStore((s) => s.removeResult);
+  const completed = useLessonStore((s) => s.completedSids[result.sessionId] ?? false);
+  const markCompleted = useLessonStore((s) => s.markCompleted);
+
+  /** 2026-08-21: 用户显式"处理完毕" — 不评分也可放行重新生成闸门 */
+  const doneWithLesson = () => {
+    markCompleted(result.sessionId);
+    toast.success('已确认处理完毕', {
+      description: '该教案已标记完成，可继续查看新生成的教案',
+    });
+  };
 
   const outline = useMemo(
     () => sections.map((s, i) => ({ id: s.id, title: s.title, index: i + 1 })),
@@ -209,7 +240,14 @@ export function Workbench({
                   评分偏低或内容异常。你可以选择「保留并使用」（仅保存在你的个人库，不会进入共享知识库），或「放弃此教案」。
                 </p>
                 <div className="mt-3 flex flex-wrap gap-2">
-                  <Button size="sm" onClick={() => setKeepDecided(result.sessionId, true)}>
+                  <Button
+                    size="sm"
+                    onClick={() => {
+                      setKeepDecided(result.sessionId, true);
+                      // 2026-08-21: "保留并使用"即视为该教案处理完毕, 释放重新生成闸门
+                      markCompleted(result.sessionId);
+                    }}
+                  >
                     保留并使用
                   </Button>
                   <Button
@@ -299,6 +337,18 @@ export function Workbench({
                 sessionId={result.sessionId}
                 onScored={() => useLessonStore.getState().markCompleted(result.sessionId)}
               />
+              {/* 2026-08-21: 显式"处理完毕"确认 — 不评分也可放行重新生成闸门(处理完旧教案再看新教案) */}
+              {!completed && (
+                <div className="mb-4 flex items-center justify-between rounded-xl border border-dashed border-primary/30 bg-muted/30 p-3 text-sm">
+                  <span className="text-xs text-muted-foreground">
+                    若您已处理完这份教案（不再需要评分），请确认处理完毕，以便查看新生成的教案。
+                  </span>
+                  <Button size="sm" variant="outline" onClick={doneWithLesson}>
+                    <CheckCheck className="h-3.5 w-3.5" />
+                    确认处理完毕
+                  </Button>
+                </div>
+              )}
             </div>
           </div>
         </div>

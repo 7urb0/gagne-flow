@@ -28,6 +28,23 @@ export async function submitScore(
   });
 }
 
+/**
+ * 2026-08-21: 评分窗口"延迟激活" — 教案展示给用户(打开工作台)时调用,
+ * 使后端正式评分窗口从"用户看到教案"才开始计时(而非 Review 完成即计时)。
+ * 幂等; 404(窗口已关闭/已释放)静默忽略。
+ */
+export async function activateLesson(sessionId: string): Promise<void> {
+  try {
+    await apiFetch('/api/lesson_plan/activate', {
+      method: 'POST',
+      body: { sessionId },
+      timeoutMs: 15000,
+    });
+  } catch {
+    /* 404/失败可忽略: 评分窗口可能已关闭, 由评分面板提示 */
+  }
+}
+
 export async function submitClarify(token: string, answer: string): Promise<void> {
   await apiFetch('/api/lesson_plan/clarify', {
     method: 'POST',

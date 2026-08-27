@@ -12,6 +12,9 @@ public class MilvusProperties {
     private String password = "";
     private String database = "default";
     private Long timeout = 10000L;
+    private String personalPlansCollection = "personal_plans";
+    /** 反哺教案入库与检索统一的质量门槛(默认 85; 2026-08-27 收敛原回灌70/检索85魔法数漂移) */
+    private Integer lessonPlanMinScore = 85;
 
     public String getAddress() {
         return this.host + ":" + this.port;
@@ -37,6 +40,14 @@ public class MilvusProperties {
         this.database = database;
     }
 
+    public void setPersonalPlansCollection(String personalPlansCollection) {
+        this.personalPlansCollection = personalPlansCollection;
+    }
+
+    public void setLessonPlanMinScore(Integer lessonPlanMinScore) {
+        this.lessonPlanMinScore = lessonPlanMinScore;
+    }
+
     public void setTimeout(Long timeout) {
         this.timeout = timeout;
     }
@@ -59,6 +70,14 @@ public class MilvusProperties {
 
     public String getDatabase() {
         return this.database;
+    }
+
+    public String getPersonalPlansCollection() {
+        return this.personalPlansCollection;
+    }
+
+    public Integer getLessonPlanMinScore() {
+        return this.lessonPlanMinScore;
     }
 
     public Long getTimeout() {

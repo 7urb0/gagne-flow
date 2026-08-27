@@ -38,7 +38,7 @@ class ConcurrencyEdgeCaseTest {
                     try {
                         for (int i = 0; i < messagesPerThread; i++) {
                             session.addMessage("q-" + threadId + "-" + i,
-                                    "a-" + threadId + "-" + i, 1000, counter);
+                                    "a-" + threadId + "-" + i, counter);
                         }
                     } finally {
                         latch.countDown();
@@ -60,9 +60,9 @@ class ConcurrencyEdgeCaseTest {
             var session = new com.gagneflow.service.chat.ChatSession("clear-test");
             var counter = new com.gagneflow.service.memory.TokenCounter();
 
-            session.addMessage("q1", "a1", 10, counter);
+            session.addMessage("q1", "a1", counter);
             Thread t1 = new Thread(session::clearHistory);
-            Thread t2 = new Thread(() -> session.addMessage("q2", "a2", 10, counter));
+            Thread t2 = new Thread(() -> session.addMessage("q2", "a2", counter));
 
             t1.start();
             t2.start();

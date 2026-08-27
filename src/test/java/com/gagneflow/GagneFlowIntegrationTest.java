@@ -43,7 +43,8 @@ class GagneFlowIntegrationTest {
         assertNotNull(html, "HTML output should not be null");
         assertTrue(html.length() > 50, "HTML output should be substantial");
         assertTrue(html.contains("分析内容"), "HTML should contain analysis content");
-        assertTrue(html.contains("评审意见"), "HTML should contain review content");
+        // 2026-08-22: Review 不再写入教案正文(由 SSE stage:review 独立下发)
+        assertFalse(html.contains("评审意见"), "HTML should NOT contain review content");
     }
 
     @Test

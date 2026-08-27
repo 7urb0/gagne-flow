@@ -16,7 +16,6 @@ cors:
 gagneflow:
   session:
     max-idle: 24h
-    max-window-size: 6
   memory:
     max-history-tokens: 3000
     max-window-tokens: 2000
@@ -29,6 +28,18 @@ gagneflow:
     conflict-llm-model: ${LTM_CONFLICT_LLM_MODEL:qwen-turbo}
   k12:
     path: lesson-plan-docs/k12_curriculum.json
+  # =============================================================================
+  # 对话多 Agent 编排(阶段一: supervisor 编排壳, 默认 single 零行为变化)
+  #   single       : 现有单 ReactAgent 路径(默认)
+  #   orchestrated : supervisor 规划 -> (检索) -> 执行 -> 复核 的轻量编排路径
+  # 转正指标(灰度窗口 4 周, 达标后移除 single 双路径):
+  #   1) orchestrated 模式整体 token 净节省 >= 10% (vs 同期 all-single 基线, 按 TokenCounter 估算)
+  #   2) 延迟增幅 <= 20% (P95 端到端, 不含流式首字节优化迭代引入的方差)
+  #   3) 复核检出率 > 0 (REVIEW 至少拦截 1 次 FAIL 回溯/周) 且无新增 P0/P1
+  # 阶段一明确不接 checkpoint(断点续答为后续需求)
+  agent:
+    mode: ${GAGNEFLOW_AGENT_MODE:single}
+    prompt-dir: ${GAGNEFLOW_AGENT_PROMPT_DIR:agent-config/prompts/v1}
   pdf:
     # 中文字体路径(2026-08-18): Docker 镜像内为 /usr/share/fonts/truetype/wqy/wqy-zenhei.ttc,
     # 本地留空则走 addChineseFonts 硬编码路径(Windows/macOS/Linux 自动探测)
@@ -52,7 +63,6 @@ gagneflow:
   addrf:
     # Analysis 前置意图理解 + 澄清问题(2026-08-18 一期): 建议式推送不阻塞
     analysis-clarify-enabled: ${ADDRF_CLARIFY_ENABLED:true}
-    max-clarify-questions: 3
     # 2026-08-19 二期: 澄清等待用户回答的窗口(秒), 超时降级不阻塞
     clarify-wait-seconds: ${ADDRF_CLARIFY_WAIT_SECONDS:45}
     # Analysis 结果缓存 TTL(小时), 1h -> 6h 减少重复 LLM 调用
@@ -212,6 +222,8 @@ milvus:
   timeout: 10000
   # 2026-08-19: 反哺教案独立个人库 collection 名(可配)
   personal-plans-collection: ${MILVUS_PERSONAL_PLANS_COLLECTION:personal_plans}
+  # 反哺教案入库/检索统一质量门槛 (2026-08-27: 原回灌70 vs 检索85 魔法数漂移, 统一收敛可配)
+  lesson-plan-min-score: ${MILVUS_LESSON_PLAN_MIN_SCORE:85}
   search:
     nprobe: ${MILVUS_NPROBE:16}
     nprobe-max: ${MILVUS_NPROBE_MAX:64}

@@ -55,8 +55,22 @@ class VectorIndexServiceValidateTest {
         }
 
         @Test
-        @DisplayName("只有 2 个核心要素的教案不通过校验（需至少 3 个）")
-        void twoElementsFails() {
+        @DisplayName("只有 1 个核心要素的教案不通过校验（需至少 2 个）")
+        void singleElementFails() {
+            StringBuilder sb = new StringBuilder();
+            sb.append("教学目标: 学生掌握面积计算公式。\n");
+            while (sb.length() < 550) {
+                sb.append("学生观察教师演示的图形变换过程，理解面积公式的推导逻辑，"
+                        + "并通过练习加深对公式的记忆与应用。");
+            }
+            String result = VectorIndexService.validateLessonPlanStructure(sb.toString());
+            assertNotNull(result, "只有 1 个要素的教案应被拒绝");
+            assertTrue(result.contains("结构不完整"), "失败原因应说明结构问题，实际: " + result);
+        }
+
+        @Test
+        @DisplayName("2026-08-22: 2 个核心要素(教学目标+教学过程)可通过校验(阈值 3->2, 要素 4->3)")
+        void twoElementsPassesAfterReviewRemoval() {
             StringBuilder sb = new StringBuilder();
             sb.append("教学目标: 学生掌握面积计算公式。\n");
             sb.append("教学过程: 本课通过直观演示引导学生理解面积概念。\n");
@@ -65,7 +79,7 @@ class VectorIndexServiceValidateTest {
                         + "并通过练习加深对公式的记忆与应用。");
             }
             String result = VectorIndexService.validateLessonPlanStructure(sb.toString());
-            assertNotNull(result, "只有 2 个要素的教案应被拒绝");
+            assertNull(result, "2 个核心要素的教案应通过校验(Review 移除后教学评估不再是要素)，实际: " + result);
         }
 
         @Test

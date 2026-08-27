@@ -51,7 +51,7 @@ class RagServiceQueryStreamTest {
         ReflectionTestUtils.setField(ragService, "model", "qwen-max-latest");
         ReflectionTestUtils.setField(ragService, "apiKey", "test-api-key");
         ReflectionTestUtils.setField(ragService, "relevanceThreshold", 0.3);
-        ReflectionTestUtils.setField(ragService, "searchTopK", 15);
+        ReflectionTestUtils.setField(ragService, "searchTopK", 30);
         ReflectionTestUtils.setField(ragService, "rerankTopN", 3);
 
         when(queryRewriter.rewrite(anyString(), anyList())).thenAnswer(inv -> inv.getArgument(0));
@@ -96,7 +96,7 @@ class RagServiceQueryStreamTest {
             ragService.queryStream("它是什么？", 7L, List.of(Map.of("role", "user", "content", "前文")),
                     new RecordingCallback());
 
-            verify(vectorSearchService).searchWithRerank(eq("改写后的完整问题"), eq(15), eq(3), eq(7L));
+            verify(vectorSearchService).searchWithRerank(eq("改写后的完整问题"), eq(30), eq(3), eq(7L));
         }
 
         @Test
@@ -108,7 +108,7 @@ class RagServiceQueryStreamTest {
 
             ragService.queryStream("原始问题", new RecordingCallback());
 
-            verify(vectorSearchService).searchWithRerank(eq("原始问题"), eq(15), eq(3), eq(0L));
+            verify(vectorSearchService).searchWithRerank(eq("原始问题"), eq(30), eq(3), eq(0L));
         }
     }
 
@@ -236,7 +236,7 @@ class RagServiceQueryStreamTest {
 
             ragService.queryStream("问题", 99L, new ArrayList<>(), new RecordingCallback());
 
-            verify(vectorSearchService).searchWithRerank(anyString(), eq(15), eq(3), eq(99L));
+            verify(vectorSearchService).searchWithRerank(anyString(), eq(30), eq(3), eq(99L));
         }
 
         @Test
@@ -247,7 +247,7 @@ class RagServiceQueryStreamTest {
 
             ragService.queryStream("问题", null, new ArrayList<>(), new RecordingCallback());
 
-            verify(vectorSearchService).searchWithRerank(anyString(), eq(15), eq(3), eq(0L));
+            verify(vectorSearchService).searchWithRerank(anyString(), eq(30), eq(3), eq(0L));
         }
 
         @Test

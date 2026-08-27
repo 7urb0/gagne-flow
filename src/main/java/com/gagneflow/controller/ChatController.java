@@ -20,6 +20,9 @@ import com.alibaba.cloud.ai.graph.streaming.StreamingOutput;
 import com.gagneflow.config.security.CurrentUser;
 import com.gagneflow.dto.ChatRequest;
 import com.gagneflow.dto.SseMessage;
+import com.gagneflow.agent.orchestration.AgentOrchestrator;
+import com.gagneflow.agent.orchestration.OrchestratorInput;
+import com.gagneflow.agent.orchestration.OrchestratorResult;
 import com.gagneflow.service.chat.ChatService;
 import com.gagneflow.constant.UserConstants;
 import com.gagneflow.service.chat.ChatSessionService;
@@ -68,6 +71,8 @@ public class ChatController {
     private ThreadPoolExecutor executor;
     @Autowired
     private DashScopeApi dashScopeApi;
+    @Autowired(required = false)
+    private AgentOrchestrator agentOrchestrator;
 
     private static final int SUMMARY_TRIGGER_THRESHOLD = 5;
     private static final int MIN_NEW_PAIRS_FOR_SUMMARY = 3;
@@ -115,6 +120,22 @@ public class ChatController {
                         this.memoryManager.buildFullContext(uid, request.getId(), request.getQuestion(), 3);
                 List<Map<String, String>> history = ctx.getHistory();
                 String longTermCtx = ctx.getLongTermContext();
+                // 2026-08-27: 多 Agent 编排路径(默认 single 不启用; 启用时同步走双写/摘要, 契约不变)
+                if (this.agentOrchestrator != null && this.agentOrchestrator.isEnabled()) {
+                    OrchestratorInput oi = new OrchestratorInput(
+                            request.getQuestion(), uid, request.getId(), history, longTermCtx);
+                    OrchestratorResult or = this.agentOrchestrator.run(oi);
+                    this.memoryManager.addMessage(uid, request.getId(), request.getQuestion(), or.answer());
+                    this.tryTriggerSummary(uid, request.getId());
+                    if (or.answer() != null && !or.answer().isEmpty()) {
+                        emitter.send(SseEmitter.event().name("message")
+                                .data(SseMessage.content(or.answer()), MediaType.APPLICATION_JSON));
+                    }
+                    emitter.send(SseEmitter.event().name("message")
+                            .data(SseMessage.done(), MediaType.APPLICATION_JSON));
+                    emitter.complete();
+                    return;
+                }
                 DashScopeChatModel chatModel = this.chatService.createStandardChatModel(this.dashScopeApi);
                 String systemPrompt = this.chatService.buildSystemPrompt(history, longTermCtx);
                 ReactAgent agent = this.chatService.createReactAgent(chatModel, systemPrompt);
@@ -157,8 +178,10 @@ public class ChatController {
                     try {
                         heartbeatExecutor.shutdownNow(); // 2026-08-19 修复: 流完成时关闭心跳(原 finally 立即关导致心跳从未生效)
                         String fullAnswer = fullAnswerBuilder.toString();
-                        this.chatSessionService.saveMessage(uid, request.getId(), "user", request.getQuestion());
-                        this.chatSessionService.saveMessage(uid, request.getId(), "assistant", fullAnswer);
+                        // P0-1: 流式对话必须写 Redis 会话(L1 滑动窗口/L2 摘要/L3 事实的数据源).
+                        // 原实现只 saveMessage(仅 MySQL), 导致 buildFullContext 每轮读到空 Redis -> 模型失忆, 三层记忆失效.
+                        // memoryManager.addMessage 内部会先写 Redis(withOptimisticLock+token裁剪), 再双写 MySQL.
+                        this.memoryManager.addMessage(uid, request.getId(), request.getQuestion(), fullAnswer);
                         this.tryTriggerSummary(uid, request.getId());
                         emitter.send(SseEmitter.event().name("message")
                                 .data(SseMessage.done(), MediaType.APPLICATION_JSON));

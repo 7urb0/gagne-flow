@@ -32,14 +32,14 @@ class ChatSessionTest {
 
     @Test
     void addMessage_shouldIncreasePairCount() {
-        session.addMessage("问题1", "回答1", 10, tokenCounter);
+        session.addMessage("问题1", "回答1", tokenCounter);
         assertEquals(1, session.getMessagePairCount());
         assertEquals(2, session.getMessageHistory().size());
     }
 
     @Test
     void addMessage_shouldStoreRoles() {
-        session.addMessage("你好", "你好！有什么可以帮助你的？", 10, tokenCounter);
+        session.addMessage("你好", "你好！有什么可以帮助你的？", tokenCounter);
 
         List<Map<String, String>> history = session.getMessageHistory();
         assertEquals("user", history.get(0).get("role"));
@@ -49,9 +49,9 @@ class ChatSessionTest {
 
     @Test
     void addMultipleMessages_shouldTrackPairs() {
-        session.addMessage("Q1", "A1", 10, tokenCounter);
-        session.addMessage("Q2", "A2", 10, tokenCounter);
-        session.addMessage("Q3", "A3", 10, tokenCounter);
+        session.addMessage("Q1", "A1", tokenCounter);
+        session.addMessage("Q2", "A2", tokenCounter);
+        session.addMessage("Q3", "A3", tokenCounter);
 
         assertEquals(3, session.getMessagePairCount());
         assertEquals(6, session.getMessageHistory().size());
@@ -59,8 +59,8 @@ class ChatSessionTest {
 
     @Test
     void buildFullText_shouldConcatenateAllContent() {
-        session.addMessage("Q1", "A1", 10, tokenCounter);
-        session.addMessage("Q2", "A2", 10, tokenCounter);
+        session.addMessage("Q1", "A1", tokenCounter);
+        session.addMessage("Q2", "A2", tokenCounter);
 
         String fullText = session.buildFullText();
 
@@ -72,7 +72,7 @@ class ChatSessionTest {
 
     @Test
     void clearHistory_shouldResetAllState() {
-        session.addMessage("Q1", "A1", 10, tokenCounter);
+        session.addMessage("Q1", "A1", tokenCounter);
         session.setSummary("摘要内容");
 
         session.clearHistory();
@@ -86,7 +86,7 @@ class ChatSessionTest {
 
     @Test
     void setHistory_shouldReplaceAndUpdateCount() {
-        session.addMessage("Q1", "A1", 10, tokenCounter);
+        session.addMessage("Q1", "A1", tokenCounter);
 
         List<Map<String, String>> newHistory = List.of(
                 Map.of("role", "user", "content", "新问题"),
@@ -109,7 +109,7 @@ class ChatSessionTest {
 
     @Test
     void getMessageHistory_shouldReturnDefensiveCopy() {
-        session.addMessage("Q1", "A1", 10, tokenCounter);
+        session.addMessage("Q1", "A1", tokenCounter);
         List<Map<String, String>> history = session.getMessageHistory();
 
         // 修改返回的列表不应影响内部状态

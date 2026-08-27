@@ -24,6 +24,7 @@ public class PipelineMetrics {
     private final Counter addrfStageCounter;
     private final Counter hitlTriggerCounter;
     private final Timer addrfStageTimer;
+    private final Counter quickMarkdownFallbackCounter;
 
     public PipelineMetrics(MeterRegistry meterRegistry) {
         this.ragSearchCounter = Counter.builder("gagneflow.rag.search.total")
@@ -44,6 +45,8 @@ public class PipelineMetrics {
                 .description("Total HITL triggers (human review required)").register(meterRegistry);
         this.addrfStageTimer = Timer.builder("gagneflow.addrf.stage.duration")
                 .description("ADDRF stage execution duration").register(meterRegistry);
+        this.quickMarkdownFallbackCounter = Counter.builder("gagneflow.addrf.quick.fallback")
+                .description("quick 模式降级到 Markdown 路径的次数").register(meterRegistry);
     }
 
     public void recordRagSearch(String query, long durationMs, int candidateCount, int finalCount, double avgRelevance) {
@@ -89,6 +92,12 @@ public class PipelineMetrics {
     public void recordHitlTrigger(String subject, Long userId) {
         hitlTriggerCounter.increment();
         logger.info("[HITL-METRIC] subject={} userId={} trigger=total", subject, userId);
+    }
+
+    /** 2026-08-23: quick 模式降级到 Markdown 路径(观测 LLM 对"输出纯 HTML"的遵守度) */
+    public void recordQuickFallback() {
+        quickMarkdownFallbackCounter.increment();
+        logger.info("[QUICK-METRIC] quick markdown fallback");
     }
 
     private static String truncate(String s, int maxLen) {

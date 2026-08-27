@@ -21,6 +21,8 @@ import org.springframework.stereotype.Service;
 @Service
 public class VectorEmbeddingService {
     private static final Logger logger = LoggerFactory.getLogger(VectorEmbeddingService.class);
+    // 与 MilvusConstants.VECTOR_DIM(1024, text-embedding-v4) 对齐, 熔断兜底零向量维度
+    private static final int EMBEDDING_DIM = 1024;
     @Value(value="${spring.ai.dashscope.api-key}")
     private String apiKey;
     @Value(value="${dashscope.embedding.model}")
@@ -73,8 +75,29 @@ public class VectorEmbeddingService {
      * 返回归一化的零向量作为降级结果（维度假定为1024）
      */
     public List<Float> generateEmbeddingFallback(String content, Throwable t) {
-        logger.warn("[CIRCUIT-BREAKER] DashScope熔断器已打开，返回空向量列表。内容长度: {}, 原因: {}", content != null ? content.length() : 0, t.getMessage());
-        return Collections.emptyList();
+        logger.warn("[CIRCUIT-BREAKER] DashScope熔断器已打开，返回零向量兜底。内容长度: {}, 原因: {}", content != null ? content.length() : 0, t.getMessage());
+        // P2-4: 返回 1024 维零向量而非空列表。原实现在熔断时返回 Collections.emptyList(),
+        // 导致 chunkAndIndex 把空向量送进 Milvus 按维度校验而整批插入失败, 一份文档全部落空。
+        // 零向量经 normalizeL2(norm=0) 保持原样, Milvus 可接受(降级索引, 相关性偏低)。
+        return Collections.nCopies(VectorEmbeddingService.EMBEDDING_DIM, Float.valueOf(0.0f));
+    }
+
+    /**
+     * P4-3: 批量 embedding 的熔断 fallback —— 与单条 {@link #generateEmbeddingFallback} 对齐。
+     * 为每个输入返回 1024 维零向量, 使批量路径在熔断时与其他路径行为保持一致, 而不是直接抛异常。
+     */
+    public List<List<Float>> generateEmbeddingsFallback(List<String> contents, Throwable t) {
+        logger.warn("[CIRCUIT-BREAKER] DashScope熔断器已打开(批量)，返回零向量列表兜底。数量: {}, 原因: {}",
+                contents != null ? contents.size() : 0, t.getMessage());
+        if (contents == null || contents.isEmpty()) {
+            return Collections.emptyList();
+        }
+        ArrayList<List<Float>> fallback = new ArrayList<>(contents.size());
+        List<Float> zero = Collections.nCopies(VectorEmbeddingService.EMBEDDING_DIM, Float.valueOf(0.0f));
+        for (int i = 0; i < contents.size(); i++) {
+            fallback.add(new ArrayList<>(zero));
+        }
+        return fallback;
     }
 
     /**
@@ -114,6 +137,7 @@ public class VectorEmbeddingService {
         return floatEmbedding;
     }
 
+    @CircuitBreaker(name="dashscope", fallbackMethod="generateEmbeddingsFallback")
     public List<List<Float>> generateEmbeddings(List<String> contents) {
         try {
             if (contents == null || contents.isEmpty()) {

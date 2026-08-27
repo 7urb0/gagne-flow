@@ -85,15 +85,23 @@ public class PdfGenerator {
                 logger.warn("配置字体加载失败: {}, 回退硬编码路径", this.configuredFontPath, e);
             }
         }
-        String[][] fontPaths = new String[][]{{"C:/Windows/Fonts/simsun.ttc,0", "SimSun"}, {"C:/Windows/Fonts/simhei.ttf", "SimHei"}, {"/usr/share/fonts/truetype/wqy/wqy-zenhei.ttc", "WenQuanYi"}, {"/System/Library/Fonts/PingFang.ttc", "PingFang"}};
+        // 2026-08-22: 加载全部可用字体(不 return), 供 CSS font-family 列表 fallback;
+        // 字体链加 Arial 兜底数学符号(±×÷²√≈≤≥等)。emoji 已在 FormatTool 出口替换为可打印符号。
+        String[][] fontPaths = new String[][]{{"C:/Windows/Fonts/simsun.ttc,0", "SimSun"}, {"C:/Windows/Fonts/simhei.ttf", "SimHei"}, {"C:/Windows/Fonts/arial.ttf", "Arial"}, {"/usr/share/fonts/truetype/wqy/wqy-zenhei.ttc", "WenQuanYi"}, {"/System/Library/Fonts/PingFang.ttc", "PingFang"}};
+        int loaded = 0;
         for (String[] fp : fontPaths) {
             try {
                 renderer.getFontResolver().addFont(fp[0], "Identity-H", true);
-                return;
+                loaded++;
             }
             catch (Exception exception) {
+                logger.debug("PDF 字体加载失败(跳过): {}", fp[0]);
             }
         }
-        logger.warn("\u672a\u627e\u5230\u4e2d\u6587\u5b57\u4f53\u6587\u4ef6\uff0cPDF \u4e2d\u6587\u6e32\u67d3\u53ef\u80fd\u5f02\u5e38");
+        if (loaded == 0) {
+            logger.warn("\u672a\u627e\u5230\u4e2d\u6587\u5b57\u4f53\u6587\u4ef6\uff0cPDF \u4e2d\u6587\u6e32\u67d3\u53ef\u80fd\u5f02\u5e38");
+        } else {
+            logger.info("PDF 字体加载完成: {} 个字体", loaded);
+        }
     }
 }

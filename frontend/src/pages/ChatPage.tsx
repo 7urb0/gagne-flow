@@ -5,7 +5,6 @@ import { useAuthStore } from '@/store/auth';
 import { useStreamChat } from '@/hooks/useStreamChat';
 import { MessageBubble } from '@/components/chat/MessageBubble';
 import { ChatInput } from '@/components/chat/ChatInput';
-import { registerHistory } from '@/api/chat';
 
 function Welcome() {
   return (
@@ -30,7 +29,6 @@ function Welcome() {
 /** 智能对话页 /chat — 居中消息流 (Vercel AI Chatbot 风格) */
 export function ChatPage() {
   const { messages, streaming } = useChatStore();
-  const { sessionId } = useChatStore();
   const username = useAuthStore((s) => s.username);
   const scrollRef = useRef<HTMLDivElement>(null);
 
@@ -48,9 +46,6 @@ export function ChatPage() {
 
   const doSend = async (text: string) => {
     await send(text);
-    if (messages.length === 1 && username) {
-      void registerHistory(sessionId, text.slice(0, 30)).catch(() => undefined);
-    }
   };
 
   return (

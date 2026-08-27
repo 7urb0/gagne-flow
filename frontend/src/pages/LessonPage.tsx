@@ -39,6 +39,7 @@ export function LessonPage() {
     setLastError,
     addResult,
     updateResultHtml,
+    updateResultAssessment,
     results,
     activeResultIndex,
     setActiveResultIndex,
@@ -68,6 +69,9 @@ export function LessonPage() {
   const previewRef = useRef<string | null>(null);
   const currentSidRef = useRef<string | null>(null);
   const reviewTextRef = useRef<string | null>(null);
+  // 2026-08-21 Layer2: stage:review 事件附带的结构化评分(单一数据源, 前端不 re-parse)
+  const reviewScoreRef = useRef<number | undefined>(undefined);
+  const reviewDimsRef = useRef<import('@/types').ScoreDimensions | undefined>(undefined);
   const addedRef = useRef<string | null>(null);
   const awaiterKey = useRef(0);
 
@@ -82,6 +86,8 @@ export function LessonPage() {
     previewRef.current = null;
     currentSidRef.current = null;
     reviewTextRef.current = null;
+    reviewScoreRef.current = undefined;
+    reviewDimsRef.current = undefined;
     addedRef.current = null;
     useLessonStore.getState().reset();
   };
@@ -103,26 +109,41 @@ export function LessonPage() {
 
   /**
    * 提交一份完成的教案到 results(L4)。
+   * P1-1: stage:format(updated) 先触发 addResult(评分未到), 随后 stage:review 到达携带 score/dimensions。
+   * 原实现 addedRef 早退把后续 review 的评分丢弃; 现改为"已存在则原位更新", 避免评分丢失。
    * 闸门: 若当前仍有"未处理完毕"的旧教案(未评分且未确认完成), 新教案暂存 pendingNewIndex,
    * 不直接抢占展示, 并提示用户"处理完旧教案后请确认查看"; 否则直接打开。
    */
   const commitResult = useCallback(
     (sid: string, html: string, reviewText?: string | null) => {
-      if (addedRef.current === sid) return;
+      const st0 = useLessonStore.getState();
+      const existing = st0.results.find((r) => r.sessionId === sid);
+      if (existing) {
+        // P1-1: review 晚到, 原位回填评估数据 + 刷新 HTML(最终版)
+        updateResultAssessment(sid, {
+          llmScore: reviewScoreRef.current,
+          reviewDimensions: reviewDimsRef.current,
+          reviewText: reviewText ?? undefined,
+        });
+        updateResultHtml(sid, html);
+        return;
+      }
       addedRef.current = sid;
       addResult({
         sessionId: sid,
         html,
-        title: `教案 ${useLessonStore.getState().results.length + 1}`,
+        title: `教案 ${st0.results.length + 1}`,
         createdAt: Date.now(),
-        userScored: false,
+        // 2026-08-21 Layer2: 结构化评分直接入库(单一数据源), 供 Workbench 直接消费
+        llmScore: reviewScoreRef.current,
+        reviewDimensions: reviewDimsRef.current,
         reviewText: reviewText || undefined,
       });
       const st = useLessonStore.getState();
       const idx = st.results.length - 1; // 刚加入的索引
       const hasUncompleted = st.results
         .slice(0, idx)
-        .some((r) => !st.completedSids[r.sessionId] && !r.userScored);
+        .some((r) => !st.completedSids[r.sessionId]);
       if (hasUncompleted) {
         st.setPendingNew(idx);
         toast.info('新教案已生成', {
@@ -135,7 +156,7 @@ export function LessonPage() {
         setWorkbenchOpen(true);
       }
     },
-    [addResult, showNewPlan, setActiveResultIndex, setWorkbenchOpen],
+    [addResult, updateResultAssessment, updateResultHtml, showNewPlan, setActiveResultIndex, setWorkbenchOpen],
   );
 
   const handleSubmit = useCallback(
@@ -188,11 +209,26 @@ export function LessonPage() {
               // 首次 format: 预览 (截断 500), 等待 updated 覆盖
               previewRef.current = content;
               setPreviewHtml(content);
+              // P5 quick 独立(2026-08-23): quick 无 review/updated 二次推送, 首个 format 即完整教案, 直接提交
+              if (mode === 'quick') {
+                finalHtmlRef.current = content;
+                const sid = currentSidRef.current || extra?.sessionId;
+                if (sid) {
+                  commitResult(sid, content, reviewTextRef.current);
+                }
+              }
             }
           }
 
           if (stage === 'review') {
             reviewTextRef.current = content;
+            // 2026-08-21 Layer2: 消费后端结构化评分(单一数据源), 不再依赖前端 re-parse
+            if (extra?.score != null) {
+              reviewScoreRef.current = extra.score;
+            }
+            if (extra?.dimensions) {
+              reviewDimsRef.current = extra.dimensions;
+            }
             // 已有完整 html 则刷新结果中的评估
             const sid = currentSidRef.current;
             if (sid && finalHtmlRef.current) {

@@ -28,7 +28,14 @@ public class VectorSearchService {
      * 低于该分数的 generated_lesson_plan 不参与检索，宁缺毋滥；
      * k12_curriculum 与无 _user_id 的上传文档不受影响（无 _score 字段）。
      */
+    /** 反哺教案参与检索的最低质量分数门槛(默认/兜底; 可经 milvus.lesson-plan-min-score 配置覆盖)。 */
     static final int MIN_LESSON_PLAN_SCORE = 85;
+
+    /** 统一门槛读取(入库/检索共用配置): 配置缺失时回落默认常量; 2026-08-27 收敛两处魔法数漂移。 */
+    private int lessonPlanMinScore() {
+        return this.milvusProperties != null && this.milvusProperties.getLessonPlanMinScore() != null
+                ? this.milvusProperties.getLessonPlanMinScore() : MIN_LESSON_PLAN_SCORE;
+    }
 
     @Autowired
     private MilvusServiceClient milvusClient;
@@ -36,6 +43,8 @@ public class VectorSearchService {
     private VectorEmbeddingService embeddingService;
     @Autowired
     private RerankService rerankService;
+    @Autowired
+    private com.gagneflow.config.MilvusProperties milvusProperties;
     @Value(value="${dashscope.rerank.search-top-k:15}")
     private int searchTopK;
     @Value(value="${dashscope.rerank.top-n:3}")
@@ -62,7 +71,7 @@ public class VectorSearchService {
             expr = "(" + buildPersonalPlansExpr(userId) + ") && metadata[\"_source\"] == \"generated_lesson_plan\"";
         }
         return searchCollection(
-                com.gagneflow.constant.MilvusConstants.PERSONAL_PLANS_COLLECTION,
+                this.personalPlansCollection(),
                 query, topK, this.nprobe,
                 this.embeddingService.generateQueryVector(query),
                 expr);
@@ -88,31 +97,42 @@ public class VectorSearchService {
 
     private List<SearchResult> searchWithAdaptiveNprobe(String query, int topK, Long userId) {
         // P2修复: 简化nprobe自适应循环逻辑，使用明确的边界检查
+        // 2026-08-23 P3-1: 查询向量在循环外只算一次(原 doSearch 内每轮重算, 稀疏时最多重复embed 2-3次/次查询)
+        List<Float> queryVector = this.embeddingService.generateQueryVector(query);
         int curNprobe = this.nprobe;
-        List<SearchResult> results = this.doSearch(query, topK, curNprobe, userId);
+        List<SearchResult> results = this.doSearch(query, topK, curNprobe, userId, queryVector);
         while (results.size() < topK && this.nprobeAdaptive && curNprobe < this.nprobeMax) {
             int prevNprobe = curNprobe;
             curNprobe = Math.min(curNprobe * 2, this.nprobeMax);
             logger.info("nprobe \u81ea\u9002\u5e94: {} \u2192 {}, \u5f53\u524d\u53ec\u56de: {}", new Object[]{prevNprobe, curNprobe, results.size()});
-            results = this.doSearch(query, topK, curNprobe, userId);
+            results = this.doSearch(query, topK, curNprobe, userId, queryVector);
         }
         return results;
     }
 
-    private List<SearchResult> doSearch(String query, int topK, int nprobeVal, Long userId) {
+    /** 2026-08-23: 个人教案库 collection 名(优先读配置, 兜底常量) */
+    private String personalPlansCollection() {
+        if (this.milvusProperties != null && this.milvusProperties.getPersonalPlansCollection() != null
+                && !this.milvusProperties.getPersonalPlansCollection().isEmpty()) {
+            return this.milvusProperties.getPersonalPlansCollection();
+        }
+        return com.gagneflow.constant.MilvusConstants.PERSONAL_PLANS_COLLECTION;
+    }
+
+    private List<SearchResult> doSearch(String query, int topK, int nprobeVal, Long userId, List<Float> queryVector) {
         // 2026-08-19: 双 collection 查询合并 - biz(课标+上传文档) + personal_plans(个人教案)
         ArrayList<SearchResult> results = new ArrayList<>();
-        List<Float> queryVector = this.embeddingService.generateQueryVector(query);
+        // P3-1: queryVector 由调用方预计算传入, 避免每轮自适应重复 embed
         // 1. 公共知识库 biz 检索
         results.addAll(searchCollection("biz", query, topK, nprobeVal, queryVector, buildSearchExpr(userId)));
         // 2. 个人教案库 personal_plans 检索(仅登录用户; 教案必须 _score >= 门槛才进候选, 宁缺毋滥)
         if (userId != null && userId > 0L) {
             try {
                 results.addAll(searchCollection(
-                        com.gagneflow.constant.MilvusConstants.PERSONAL_PLANS_COLLECTION,
+                        this.personalPlansCollection(),
                         query, topK, nprobeVal, queryVector,
                         String.format("(%s) && metadata[\"_score\"] >= %d",
-                                buildPersonalPlansExpr(userId), MIN_LESSON_PLAN_SCORE)));
+                                buildPersonalPlansExpr(userId), this.lessonPlanMinScore())));
             } catch (Exception e) {
                 logger.warn("[ADDRF] \u4e2a\u4eba\u6559\u6848\u5e93\u68c0\u7d22\u5931\u8d25(\u4e0d\u5f71\u54cd biz \u7ed3\u679c): {}", e.getMessage());
             }

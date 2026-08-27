@@ -84,3 +84,10 @@ __pycache__/
 *.pyc
 embed_fails.txt
 .tmp_reinforce_note.md
+
+### 调试抓包与临时凭据(不入库) ###
+lesson_sse.txt
+login2.json
+sse_*.txt
+sse_lock*.txt
+token.txt

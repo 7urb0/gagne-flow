@@ -1,4 +1,4 @@
-import { useState } from 'react';
+import { useEffect, useState } from 'react';
 import { CheckCircle2, PencilLine, Square } from 'lucide-react';
 import { toast } from 'sonner';
 import { Button } from '@/components/ui/button';
@@ -6,10 +6,14 @@ import { Textarea } from '@/components/ui/textarea';
 import { submitCopilotAction } from '@/api/lesson';
 import { STAGE_LABELS, type StageName } from '@/store/lesson';
 
+/** 后端 emitCopilotAwait 的等待窗口(秒), 与 AddrfPipeline 对齐 */
+const AWAIT_TIMEOUT_SEC = 120;
+
 /**
  * Copilot 分步确认面板
  * 三按钮: 确认继续 / 修改后继续 / 停止生成
  * 提交 POST /api/lesson_plan/action {token, action, stage, instruction}
+ * 2026-08-21: 增加超时倒计时提示 — 后端 120s 未收到操作会自动继续, 避免用户困惑"为什么自己走了"
  */
 export function CopilotConfirm({
   stage,
@@ -23,6 +27,15 @@ export function CopilotConfirm({
   const [state, setState] = useState<'idle' | 'input' | 'sent' | 'terminated'>('idle');
   const [instruction, setInstruction] = useState('');
   const [sending, setSending] = useState(false);
+  const [remainSec, setRemainSec] = useState(AWAIT_TIMEOUT_SEC);
+
+  useEffect(() => {
+    if (state !== 'idle') return;
+    const timer = window.setInterval(() => {
+      setRemainSec((s) => Math.max(0, s - 1));
+    }, 1000);
+    return () => window.clearInterval(timer);
+  }, [state]);
 
   const label = STAGE_LABELS[stage as StageName] || stage;
 
@@ -68,6 +81,15 @@ export function CopilotConfirm({
       <p className="mb-2 text-xs leading-relaxed text-muted-foreground">
         请确认本阶段内容；确认无误请点「确认继续」，需要调整请点「修改后继续」。等待您确认后再进入下一步。
       </p>
+      {remainSec <= 30 ? (
+        <p className="mb-2 text-xs font-semibold text-amber-700">
+          若您在 {remainSec} 秒内未操作，将自动继续生成下一阶段…
+        </p>
+      ) : (
+        <p className="mb-2 text-[11px] text-muted-foreground">
+          倒计时 {remainSec}s 后未操作将自动继续（可随时点击按钮确认）
+        </p>
+      )}
       {preview && (
         <p className="mb-2 line-clamp-3 text-xs leading-relaxed text-muted-foreground">
           {preview}
