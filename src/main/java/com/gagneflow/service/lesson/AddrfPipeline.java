@@ -20,6 +20,8 @@ import java.util.concurrent.Future;
 import java.util.concurrent.LinkedBlockingQueue;
 import java.util.concurrent.ScheduledExecutorService;
 import java.util.concurrent.ThreadPoolExecutor;
+import java.util.concurrent.atomic.AtomicBoolean;
+import java.util.concurrent.atomic.AtomicLong;
 import java.util.concurrent.TimeUnit;
 import java.util.concurrent.TimeoutException;
 import java.util.regex.Matcher;
@@ -61,6 +63,10 @@ public class AddrfPipeline {
     private static final int UPLOADED_DOC_SNIPPET_CHARS = 400;
     private static final Set<String> TEXT_HEAVY_SUBJECTS = Set.of("\u8bed\u6587", "\u82f1\u8bed", "\u5386\u53f2", "\u653f\u6cbb");
     private static final String DEGRADED_PREFIX = "[\u7cfb\u7edf\u63d0\u793a";
+    // 2026-08-31: 超时部分保留标记(与 DEGRADED 语义独立): 交付已生成部分而非重做/占位
+    private static final String PARTIAL_PREFIX = "[\u8f93\u51fa\u622a\u65ad";
+    // 2026-08-31 v2: 续写最小长度阈值 — partial 低于此值时续写无意义(=更短预算的重做), 直接 RECALL_FULL
+    private static final int MIN_CONTINUE_CHARS = 50;
     private final PromptLoader promptLoader;
     private final PromptRegistry promptRegistry;
     private final PromptExperiment promptExperiment;
@@ -104,6 +110,16 @@ public class AddrfPipeline {
     // 2026-08-31: copilot stage_await 等待用户确认的超时(秒), 由硬编码 120s 提为可配且默认 180s(与前端 CopilotConfirm.AWAIT_TIMEOUT_SEC 同步)
     @org.springframework.beans.factory.annotation.Value("${gagneflow.addrf.await-timeout-seconds:180}")
     private long awaitTimeoutSeconds = 180L;
+    // 2026-08-31 超时完整度改进: 部分保留/断点续写(详见 application.yml gagneflow.addrf 段注释)
+    @org.springframework.beans.factory.annotation.Value("${gagneflow.addrf.timeout-partial-keep:true}")
+    private boolean timeoutPartialKeep = true;
+    @org.springframework.beans.factory.annotation.Value("${gagneflow.addrf.partial-keep-chars:300}")
+    private int partialKeepChars = 300;
+    @org.springframework.beans.factory.annotation.Value("${gagneflow.addrf.continue-budget-seconds:45}")
+    private int continueBudgetSeconds = 45;
+    // 2026-08-31 v2 双层计时: L1 挂死检测(chunk 间隔, 含 TTFB) — 与 L2 总预算(Flux.take(timeoutSec))分离
+    @org.springframework.beans.factory.annotation.Value("${gagneflow.addrf.gap-timeout-sec:45}")
+    private int gapTimeoutSeconds = 45;
     // 2026-08-18: Analysis 缓存 TTL(小时), 由 1h 延长至 6h 减少重复调用
     @org.springframework.beans.factory.annotation.Value("${gagneflow.addrf.analysis-cache-ttl-hours:6}")
     private int analysisCacheTtlHours;
@@ -273,6 +289,12 @@ public class AddrfPipeline {
             String quickPrompt = this.loadPrompt("addrf_quick_html", userId);
             quickPrompt = this.appendPersonalizedContext(quickPrompt, userId, sessionId, "quick");
             String quickOut = this.callAgent(chatModel, quickPrompt, initialInput, emitter, "quick", "quick", 180, request.getSubject(), sessionId);
+            // 2026-08-31 v2: 流式超时部分保留 — 剥标记置 truncated, 交付前拼黄条
+            if (quickOut != null && quickOut.startsWith(PARTIAL_PREFIX)) {
+                quickOut = this.stripPartialPrefix(quickOut);
+                result.truncated = true;
+                logger.warn("[ADDRF-QUICK] \u622a\u65ad\u4ea4\u4ed8: quickOut={} \u5b57, uid={}", quickOut.length(), userId);
+            }
             if (quickOut == null || quickOut.isBlank()) {
                 quickOut = "";
                 logger.warn("[ADDRF-QUICK] \u5feb\u901f\u6559\u6848\u751f\u6210\u5931\u8d25: subject={}, uid={}", request.getSubject(), userId);
@@ -290,6 +312,9 @@ public class AddrfPipeline {
             } else {
                 // 主路径: 直出 HTML(Jsoup 白名单消毒 -> emoji 安全化 -> 套外壳)
                 result.html = this.formatTool.formatDirect(quickOut, result.lessonHeader);
+            }
+            if (result.truncated) {
+                result.html = this.injectPartialWarning(result.html);
             }
             this.emitStageCompleteFull(emitter, "stage:format", result.html, sessionId);
             logger.info("[ADDRF-QUICK] \u5feb\u901f\u6559\u6848\u751f\u6210\u5b8c\u6210: {} \u5b57\u7b26, subject={}, uid={}, sid={}, mdFallback={}",
@@ -449,17 +474,26 @@ public class AddrfPipeline {
             }
         }
         logger.info("[ADDRF] Format \u5f00\u59cb");
+        // 2026-08-31 v2: 流式超时部分保留(截断交付) — 剥标记置 truncated, 不触发占位覆盖, 不进 Review/自愈
+        if (result.development != null && result.development.startsWith(PARTIAL_PREFIX)) {
+            result.development = this.stripPartialPrefix(result.development);
+            result.truncated = true;
+            logger.warn("[ADDRF] Development \u622a\u65ad\u4ea4\u4ed8: development={} \u5b57, uid={}", result.development.length(), userId);
+        }
         boolean bl = devDegraded = result.development != null && result.development.startsWith(DEGRADED_PREFIX);
         if (result.design != null && result.design.startsWith(DEGRADED_PREFIX)) {
             result.design = "\uff08\u6b64\u90e8\u5206\u5f85\u8865\u5145\uff09";
             devDegraded = true;
         }
-        if (devDegraded) {
+        if (devDegraded && !result.truncated) {
             result.development = "\uff08\u6b64\u90e8\u5206\u5f85\u8865\u5145\uff09\n\n> **\u26a0 \u8be5\u9636\u6bb5\u751f\u6210\u8d85\u65f6\u6216\u5931\u8d25\uff0c\u4ec5\u5c55\u793a\u5df2\u751f\u6210\u7684\u5206\u6790\u4e0e\u8bbe\u8ba1\u5185\u5bb9\u3002\u53ef\u5c1d\u8bd5\u51cf\u5c11\u8bfe\u65f6\u6570\u540e\u91cd\u65b0\u751f\u6210\u3002**";
         }
         result.html = this.formatTool.format(result.lessonHeader, result.analysis, result.design, result.development, "");
+        if (result.truncated) {
+            result.html = this.injectPartialWarning(result.html);
+        }
         this.emitStageComplete(emitter, "stage:format", result.html, sessionId);
-        if (!devDegraded && result.development != null && !result.development.startsWith(DEGRADED_PREFIX)) {
+        if (!devDegraded && !result.truncated && result.development != null && !result.development.startsWith(DEGRADED_PREFIX)) {
             String finalK12 = k12Ctx;
             String finalSubject = request.getSubject();
             CompletableFuture<Void> reviewTask = CompletableFuture.runAsync(() -> {
@@ -645,6 +679,10 @@ public class AddrfPipeline {
             if (content == null) {
                 content = "[\u7cfb\u7edf\u63d0\u793a: " + stage + " \u9636\u6bb5\u751f\u6210\u5931\u8d25]";
             }
+            // 2026-08-31 v2: 截断交付短路 — 内容不完整, revise/continue 循环无意义, 直接返回(调用方剥标记处理)
+            if (content.toString().startsWith(PARTIAL_PREFIX)) {
+                return (String) content;
+            }
             this.emitStageComplete(emitter, "stage:" + stage, content.toString(), sessionId);
             String action = this.emitCopilotAwait(emitter, stage, mode, (String)content, copilotQueues);
             if (action == null) {
@@ -668,7 +706,7 @@ public class AddrfPipeline {
 
     private void asyncReview(AddrfResult result, ChatModelPort chatModel, String devPrompt, SseEmitter emitter, String k12Ctx, String subject, Long userId, String sessionId, String sectionPlan) {
         int prevScore = -1;
-        for (int retryCount = 0; !(retryCount > 2 || result.development != null && result.development.startsWith(DEGRADED_PREFIX)); ++retryCount) {
+        for (int retryCount = 0; !(retryCount > 2 || result.truncated || result.development != null && result.development.startsWith(DEGRADED_PREFIX)); ++retryCount) {
             String reviewPrompt = this.loadPrompt("addrf_review", userId) + "\n\n\u8bfe\u7a0b\u6807\u51c6\uff1a\n" + k12Ctx;
             // 2026-08-31: Review 感知用户章节计划 — 按用户定制结构校验完整性, 而非固定默认模板
             // (消除"用户自定义结构被 Review 判低分 -> 自愈拉回默认结构"的对抗)
@@ -788,45 +826,193 @@ public class AddrfPipeline {
     }
 
     private String callAgent(ChatModelPort chatModel, String systemPrompt, String userInput, SseEmitter emitter, String stage, String mode, int timeoutSec, String subject, boolean jsonMode, String sessionId) {
-        // 2026-08-19 优化: 去掉 executor.submit 嵌套(每阶段只占 1 线程, 不再编排线程等 worker 空转)
-        // 超时控制改为 Flux.timeout 操作符, 同线程流式 + 超时
+        // 2026-08-31 v2 双层计时重构:
+        //   L1 挂死检测 Flux.timeout(gap 45s): chunk 间隔超 45s 即判挂死(原 180s timeout 是间隔语义, 挂死拖太久)
+        //   L2 总预算 Flux.take(timeoutSec): 到期优雅 onComplete, 已流出内容天然保留(非异常丢弃)
+        //   两者任一触发 → 决策树(续写优先/部分保留/重调), 详见 decideTimeoutFallback
         int maxTokens = this.resolveMaxTokens(stage, subject);
+        long start = System.currentTimeMillis();
+        StringBuilder full = new StringBuilder();
+        boolean budgetExhausted = false;
         try {
             Prompt prompt = new Prompt(List.of(new SystemMessage(systemPrompt), new UserMessage(userInput)), this.buildChatOptions(maxTokens, jsonMode));
-            StringBuilder full = new StringBuilder();
+            AtomicLong firstChunkAt = new AtomicLong(0L);
+            AtomicBoolean budgetHit = new AtomicBoolean(false);
             Flux<ChatResponse> flux = chatModel.stream(prompt);
-            flux.timeout(java.time.Duration.ofSeconds(timeoutSec)).doOnNext(response -> {
-                String chunk;
-                if (response != null && response.getResult() != null && (chunk = response.getResult().getOutput().getText()) != null) {
-                    full.append(chunk);
-                    // JSON 模式: 中间块是零散 JSON 片段, 对前端无展示价值, 不推 interim
-                    if (!jsonMode) {
-                        this.emitInterim(emitter, sessionId, stage, chunk);
+            flux.timeout(java.time.Duration.ofSeconds(this.gapTimeoutSeconds))
+                .take(java.time.Duration.ofSeconds(timeoutSec))
+                .doOnNext(response -> {
+                    if (firstChunkAt.get() == 0L) {
+                        firstChunkAt.set(System.currentTimeMillis());
                     }
-                }
-            }).blockLast();
+                    String chunk;
+                    if (response != null && response.getResult() != null && (chunk = response.getResult().getOutput().getText()) != null) {
+                        full.append(chunk);
+                        // JSON 模式: 中间块是零散 JSON 片段, 对前端无展示价值, 不推 interim
+                        if (!jsonMode) {
+                            this.emitInterim(emitter, sessionId, stage, chunk);
+                        }
+                    }
+                })
+                .doFinally(sig -> {
+                    long elapsed = System.currentTimeMillis() - start;
+                    if (firstChunkAt.get() > 0L && this.pipelineMetrics != null) {
+                        this.pipelineMetrics.recordLlmTtfb(stage, firstChunkAt.get() - start);
+                    }
+                    if (this.pipelineMetrics != null) {
+                        this.pipelineMetrics.recordLlmBudgetRatio(stage, elapsed, timeoutSec * 1000L);
+                    }
+                    // take 到期与自然完成的区分用耗时近似判定(-500ms 容差), 简单可靠
+                    if (elapsed >= timeoutSec * 1000L - 500L) {
+                        budgetHit.set(true);
+                    }
+                })
+                .blockLast();
+            budgetExhausted = budgetHit.get();
+        } catch (Exception e) {
+            // L1 gap 超时(TimeoutException) 或 流异常 — 已流出内容仍在 full 中, 进入决策树
+            logger.warn("[ADDRF] {} 流中断: 已收 {} 字, 原因: {}", stage, full.length(), e.getMessage());
+            budgetExhausted = true;
+        }
+        if (!budgetExhausted) {
+            // 模型自然完成(预算内)
             return full.toString();
         }
-        catch (Exception e) {
-            // 超时/流异常 -> 降级 call()
-            if (e instanceof java.util.concurrent.TimeoutException) {
-                logger.warn("[ADDRF] {} \u8d85\u65f6({}s), \u964d\u7ea7 call()", (Object)stage, (Object)timeoutSec);
-            } else {
-                logger.warn("[ADDRF] {} stream() \u964d\u7ea7 call(): {}", (Object)stage, (Object)e.getMessage());
-            }
+        // ---- 未完整输出: 决策树(v2: 续写优先于保留) ----
+        String partial = full.toString();
+        TimeoutFallback fallback = this.decideTimeoutFallback(stage, jsonMode, partial.length(), this.timeoutPartialKeep);
+        if (fallback == TimeoutFallback.CONTINUE) {
+            // 断点续写: 流式(45s 预算), interim 继续推前端 — 无感修复优先出口
             try {
-                Prompt prompt = new Prompt(List.of(new SystemMessage(systemPrompt), new UserMessage(userInput)), this.buildChatOptions(maxTokens, jsonMode));
-                ChatResponse response2 = chatModel.call(prompt);
-                if (response2 != null && response2.getResult() != null) {
-                    AssistantMessage msg = response2.getResult().getOutput();
-                    return msg != null ? msg.getText() : "";
+                Prompt contPrompt = this.buildContinuationPrompt(systemPrompt, userInput, partial, maxTokens, stage);
+                StringBuilder cont = new StringBuilder();
+                chatModel.stream(contPrompt)
+                    .timeout(java.time.Duration.ofSeconds(this.continueBudgetSeconds))
+                    .doOnNext(response -> {
+                        String chunk;
+                        if (response != null && response.getResult() != null && (chunk = response.getResult().getOutput().getText()) != null) {
+                            cont.append(chunk);
+                            if (!jsonMode) {
+                                this.emitInterim(emitter, sessionId, stage, chunk);
+                            }
+                        }
+                    })
+                    .blockLast();
+                if (cont.length() > 0) {
+                    if (this.pipelineMetrics != null) {
+                        this.pipelineMetrics.recordPartialContinued();
+                    }
+                    logger.info("[ADDRF] {} 续写补全 {} 字, 总长 {} — 无感修复", stage, cont.length(), partial.length() + cont.length());
+                    return partial + cont;
                 }
+                logger.warn("[ADDRF] {} 续写 0 字, 视为失败", stage);
+            } catch (Exception e2) {
+                logger.warn("[ADDRF] {} 续写失败: {}", stage, e2.getMessage());
             }
-            catch (Exception e2) {
-                logger.warn("[ADDRF] {} stream() \u964d\u7ea7 call() \u4e5f\u5931\u8d25: {}", stage, e2.getMessage());
+            // 续写失败 -> 长度分流: ≥ 阈值保留交付(截断标记), 否则重调
+            if (partial.length() >= this.partialKeepChars) {
+                if (this.pipelineMetrics != null) {
+                    this.pipelineMetrics.recordPartialKept();
+                }
+                logger.warn("[ADDRF] {} 保留部分输出 {} 字(截断交付)", stage, partial.length());
+                return PARTIAL_PREFIX + "\n" + partial;
             }
+            logger.warn("[ADDRF] {} 部分内容过短({}字), 回退 call() 重调", stage, partial.length());
+        }
+        // RECALL_FULL: 原有非流式 call() 从零重调(最后防线, SDK 重试内含)
+        try {
+            Prompt prompt = new Prompt(List.of(new SystemMessage(systemPrompt), new UserMessage(userInput)), this.buildChatOptions(maxTokens, jsonMode));
+            ChatResponse response2 = chatModel.call(prompt);
+            if (response2 != null && response2.getResult() != null) {
+                AssistantMessage msg = response2.getResult().getOutput();
+                return msg != null ? msg.getText() : "";
+            }
+        } catch (Exception e2) {
+            logger.warn("[ADDRF] {} call() 重调也失败: {}", stage, e2.getMessage());
+        }
+        return "";
+    }
+
+    /** 超时决策(v2): 仅返回 RECALL_FULL 或 CONTINUE; KEEP_PARTIAL 由续写失败后的长度分流在流程内使用 */
+    TimeoutFallback decideTimeoutFallback(String stage, boolean jsonMode, int partialLen, boolean switchOn) {
+        if (!switchOn || jsonMode) {
+            return TimeoutFallback.RECALL_FULL;
+        }
+        boolean target = "development".equals(stage) || "quick".equals(stage);
+        if (!target) {
+            return TimeoutFallback.RECALL_FULL;
+        }
+        // 空/极短内容续写无意义(等于更短预算的重做)
+        if (partialLen < MIN_CONTINUE_CHARS) {
+            return TimeoutFallback.RECALL_FULL;
+        }
+        return TimeoutFallback.CONTINUE;
+    }
+
+    enum TimeoutFallback { RECALL_FULL, CONTINUE, KEEP_PARTIAL }
+
+    /**
+     * 2026-08-31 v2: 断点续写 Prompt — 带结构锚点(尾部 100 字 + 已完成标题列表)防重复/防断裂。
+     * messages: [system, user(原输入), assistant(partial), user(续写指令)]
+     */
+    private Prompt buildContinuationPrompt(String systemPrompt, String userInput, String partial, int maxTokens, String stage) {
+        String stageName = "development".equals(stage) ? "教学过程"
+                : "quick".equals(stage) ? "教案" : stage;
+        String tail = partial.length() > 100 ? partial.substring(partial.length() - 100) : partial;
+        String headings = extractHeadings(partial);
+        String instruction = "这是 K12 教案的\"" + stageName + "\"部分，因超时中断。已输出内容的结尾是：\n"
+                + "「" + tail + "」\n"
+                + (headings.isEmpty() ? "" : "已完成的章节标题：" + headings + "\n")
+                + "请从上句之后自然衔接，继续完成剩余环节（如：巩固练习/课堂总结/课后作业/板书设计等），"
+                + "不要重复任何已输出内容，保持原有的格式与编号风格。";
+        return new Prompt(
+                List.of(new SystemMessage(systemPrompt),
+                        new UserMessage(userInput),
+                        new AssistantMessage(partial),
+                        new UserMessage(instruction)),
+                this.buildChatOptions(maxTokens, false));
+    }
+
+    /** 剥离 PARTIAL_PREFIX 标记, 返回纯内容(供上层置 truncated 后使用) */
+    private String stripPartialPrefix(String s) {
+        String content = s.substring(PARTIAL_PREFIX.length());
+        return content.startsWith("\n") ? content.substring(1) : content.stripLeading();
+    }
+
+    /**
+     * 2026-08-31 v2: 超时部分保留的黄色非阻断提示条(后端拼壳, 前端零改动)。
+     * 刻意不复用 .hitl-warning(那会触发前端"保留/放弃"强制确认, 违反 UX 约束);
+     * 可关闭交互留二期(需前端改动)。
+     */
+    private String injectPartialWarning(String html) {
+        if (html == null || html.isBlank()) {
+            return html;
+        }
+        String div = "<div class=\"partial-warning\" style=\"border:2px solid #e6a700;padding:12px;margin:12px 0;background:#fffbf0;border-radius:8px;color:#8a6100;font-size:14px;\">"
+                + "本教案可能因超时未完整生成，已为你保留当前内容；如需完整版本，可点击重新生成。</div>";
+        int idx = html.indexOf("<body>");
+        if (idx >= 0) {
+            return html.substring(0, idx + 6) + "\n" + div + html.substring(idx + 6);
+        }
+        return div + html;
+    }
+
+    /** 提取 partial 中的 Markdown 标题(^#{1,6})作为续写进度锚点, 最多 20 个 */
+    static String extractHeadings(String partial) {
+        if (partial == null || partial.isEmpty()) {
             return "";
         }
+        java.util.regex.Matcher m = java.util.regex.Pattern.compile("(?m)^#{1,6}.*$").matcher(partial);
+        StringBuilder sb = new StringBuilder();
+        int count = 0;
+        while (m.find() && count < 20) {
+            if (sb.length() > 0) {
+                sb.append("、");
+            }
+            sb.append(m.group().trim());
+            count++;
+        }
+        return sb.toString();
     }
 
     // 2026-08-19: 节流缓冲 - 按 stage 累积, 达 50 字或 100ms 才推送(改善前端观感, 减少 SSE 消息数)
@@ -1511,7 +1697,8 @@ public class AddrfPipeline {
     public void maybeBackfillNow(AddrfResult r) {
         if (r == null) return;
         // 质量类 or 安全类阻断任一为真则不回灌; 用户高分仅可覆盖"质量类", 安全类(危险词)永远不可覆盖
-        if (r.scheduleBackfill && !r.needsHumanReview && !r.needsSafetyReview) {
+        // 2026-08-31: truncated(超时部分保留)永不回灌 — 不完整内容不入库, 与用户评分高低无关
+        if (r.scheduleBackfill && !r.needsHumanReview && !r.needsSafetyReview && !r.truncated) {
             try {
                 backfillLessonPlan(r);
             } catch (Exception e) {
@@ -1566,6 +1753,8 @@ public class AddrfPipeline {
         public volatile int userScore = 0;
         // 阶段C: 回灌延后到评分窗口关闭时定案(用户低分否决能正确阻断入库)。主线程置位并暂存参数。
         public volatile boolean scheduleBackfill = false;
+        // 2026-08-31: 流式超时后保留的部分交付(可能不完整) — 黄条提示/跳过Review/不回灌
+        public volatile boolean truncated = false;
         // 2026-09-02 教案结构改造: 教学基本信息(课题/学段/年级/学科/课时), format 渲染头部
         public volatile LessonHeader lessonHeader = null;
         public volatile Long backfillUid = null;

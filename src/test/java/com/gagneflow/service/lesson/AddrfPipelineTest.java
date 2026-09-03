@@ -1068,4 +1068,75 @@ class AddrfPipelineTest {
         assertTrue(plan.contains("固定骨架"));
         assertFalse(plan.contains("用户勾选的附加模块"));
     }
+
+    // ============================================================
+    // decideTimeoutFallback tests (2026-08-31 v2 超时完整度改进)
+    // ============================================================
+
+    @Test
+    @DisplayName("decideTimeoutFallback: jsonMode(Review) -> RECALL_FULL(续写会拼坏 JSON)")
+    void decideTimeoutFallback_jsonMode_recall() {
+        assertEquals(AddrfPipeline.TimeoutFallback.RECALL_FULL,
+                defaultPipeline.decideTimeoutFallback("review", true, 2000, true));
+    }
+
+    @Test
+    @DisplayName("decideTimeoutFallback: 非目标阶段(analysis/design) -> RECALL_FULL(内容短重调便宜)")
+    void decideTimeoutFallback_nonTargetStage_recall() {
+        assertEquals(AddrfPipeline.TimeoutFallback.RECALL_FULL,
+                defaultPipeline.decideTimeoutFallback("analysis", false, 2000, true));
+        assertEquals(AddrfPipeline.TimeoutFallback.RECALL_FULL,
+                defaultPipeline.decideTimeoutFallback("design", false, 2000, true));
+    }
+
+    @Test
+    @DisplayName("decideTimeoutFallback: 总开关关闭 -> RECALL_FULL(回退现状)")
+    void decideTimeoutFallback_switchOff_recall() {
+        assertEquals(AddrfPipeline.TimeoutFallback.RECALL_FULL,
+                defaultPipeline.decideTimeoutFallback("development", false, 2000, false));
+    }
+
+    @Test
+    @DisplayName("decideTimeoutFallback: dev/quick + 内容充足 -> CONTINUE(续写优先无感修复)")
+    void decideTimeoutFallback_targetStage_continue() {
+        assertEquals(AddrfPipeline.TimeoutFallback.CONTINUE,
+                defaultPipeline.decideTimeoutFallback("development", false, 2000, true));
+        assertEquals(AddrfPipeline.TimeoutFallback.CONTINUE,
+                defaultPipeline.decideTimeoutFallback("quick", false, 2000, true));
+    }
+
+    @Test
+    @DisplayName("decideTimeoutFallback: partial 过短(<50 字) -> RECALL_FULL(续写空前缀无意义)")
+    void decideTimeoutFallback_tooShort_recall() {
+        assertEquals(AddrfPipeline.TimeoutFallback.RECALL_FULL,
+                defaultPipeline.decideTimeoutFallback("development", false, 30, true));
+    }
+
+    @Test
+    @DisplayName("前缀安全: PARTIAL_PREFIX 不命中 DEGRADED_PREFIX 判定(两标记语义独立)")
+    void partialPrefix_notConfusedWithDegraded() {
+        String partial = AddrfPipeline.buildSectionPlanText(new LessonPlanRequest());
+        String marked = "[输出截断\n" + partial;
+        assertFalse(marked.startsWith("[系统提示"), "截断标记不得触发降级判定");
+        assertTrue(marked.startsWith("[输出截断"));
+    }
+
+    @Test
+    @DisplayName("maybeBackfillNow: truncated 结果永不回灌(质量红线)")
+    void maybeBackfillNow_truncated_neverBackfills() {
+        AddrfPipeline pipeline = new AddrfPipeline(null, null, null, null, null, null, null,
+                new PipelineStageConfig(), null, null, null, null);
+        com.gagneflow.service.vector.VectorIndexService indexService = mock(com.gagneflow.service.vector.VectorIndexService.class);
+        ReflectionTestUtils.setField(pipeline, "vectorIndexService", indexService);
+
+        AddrfPipeline.AddrfResult r = new AddrfPipeline.AddrfResult();
+        r.scheduleBackfill = true;
+        r.truncated = true;               // 截断交付
+        r.score = 95;                     // 即使评分很高
+        r.html = "<html>部分内容</html>";
+
+        pipeline.maybeBackfillNow(r);
+
+        verify(indexService, never()).indexLessonPlan(anyString(), any(), anyString(), anyInt());
+    }
 }

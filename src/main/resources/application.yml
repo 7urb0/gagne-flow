@@ -69,6 +69,20 @@ gagneflow:
     # 2026-08-31: copilot 阶段确认等待(秒), 由硬编码 120s 提为可配默认 180s
     # (需与前端 CopilotConfirm.AWAIT_TIMEOUT_SEC 保持同步)
     await-timeout-seconds: ${ADDRF_AWAIT_TIMEOUT_SECONDS:180}
+    # =============================================================================
+    # 超时完整度改进 v2(双层计时 + 部分保留 + 断点续写)
+    #   双层计时: L1 gap(45s, chunk 间隔挂死检测) + L2 总预算(Flux.take, 优雅截断保留 partial)
+    #   决策树: 续写优先(无感修复) -> 续写失败按长度分流(≥300 字截断交付/过短重调)
+    #   truncated 交付: 黄色非阻断提示(不走 HITL 强制确认), 可评分, 永不回灌
+    # =============================================================================
+    # L1 挂死检测: chunk 间隔超此值即判挂死(原单层 180s timeout 实为间隔语义, 降为 45s 更快响应)
+    gap-timeout-sec: ${ADDRF_GAP_TIMEOUT_SEC:45}
+    # 续写预算(秒): 固定值不可动态算 — development 180+45=225 < 240 future 硬顶, 留 15s 给 Format
+    continue-budget-seconds: ${ADDRF_CONTINUE_BUDGET_SEC:45}
+    # 续写失败后部分保留的最小字数(低于此值重调; 非"是否续写"的判定)
+    partial-keep-chars: ${ADDRF_PARTIAL_KEEP_CHARS:300}
+    # 总开关: false 时超时行为完全回退旧版(流超时->从零重调), 一键回滚
+    timeout-partial-keep: ${ADDRF_TIMEOUT_PARTIAL_KEEP:true}
     # Analysis 结果缓存 TTL(小时), 1h -> 6h 减少重复 LLM 调用
     analysis-cache-ttl-hours: ${ADDRF_ANALYSIS_CACHE_TTL_HOURS:6}
     # 2026-08-19: 反哺综合分权重 — 用户评分占比(0-1), LLM 分占比 = 1-weight

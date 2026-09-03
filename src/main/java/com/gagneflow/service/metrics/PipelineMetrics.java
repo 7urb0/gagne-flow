@@ -47,7 +47,10 @@ public class PipelineMetrics {
                 .description("ADDRF stage execution duration").register(meterRegistry);
         this.quickMarkdownFallbackCounter = Counter.builder("gagneflow.addrf.quick.fallback")
                 .description("quick 模式降级到 Markdown 路径的次数").register(meterRegistry);
+        this.registry = meterRegistry;
     }
+
+    private final MeterRegistry registry;
 
     public void recordRagSearch(String query, long durationMs, int candidateCount, int finalCount, double avgRelevance) {
         ragSearchCounter.increment();
@@ -98,6 +101,63 @@ public class PipelineMetrics {
     public void recordQuickFallback() {
         quickMarkdownFallbackCounter.increment();
         logger.info("[QUICK-METRIC] quick markdown fallback");
+    }
+
+    // ===========================================================================
+    // 2026-08-31 v2: 超时完整度改进指标(部分保留/断点续写可观测性)
+    // ===========================================================================
+
+    /** LLM 首字延迟(TTFB) — 按阶段记录, 用于评估 L1 挂死检测阈值(45s)合理性 */
+    public void recordLlmTtfb(String stage, long ttfbMs) {
+        try {
+            Timer.builder("gagneflow.llm.ttfb")
+                    .description("LLM time-to-first-chunk")
+                    .tag("stage", stage)
+                    .register(registry)
+                    .record(Duration.ofMillis(ttfbMs));
+        } catch (Exception e) {
+            logger.trace("recordLlmTtfb 失败: {}", e.getMessage());
+        }
+    }
+
+    /** 阶段耗时/总预算比值(>1.0 = 超预算) — 用于评估预算设置与超时分布 */
+    public void recordLlmBudgetRatio(String stage, long elapsedMs, long budgetMs) {
+        if (budgetMs <= 0) {
+            return;
+        }
+        try {
+            DistributionSummary.builder("gagneflow.llm.budget.ratio")
+                    .description("LLM stage elapsed/budget ratio")
+                    .tag("stage", stage)
+                    .register(registry)
+                    .record((double) elapsedMs / budgetMs);
+        } catch (Exception e) {
+            logger.trace("recordLlmBudgetRatio 失败: {}", e.getMessage());
+        }
+    }
+
+    /** 超时后保留部分交付(截断)次数 */
+    public void recordPartialKept() {
+        try {
+            Counter.builder("gagneflow.addrf.partial.kept")
+                    .description("Timeout partial outputs kept for delivery")
+                    .register(registry)
+                    .increment();
+        } catch (Exception e) {
+            logger.trace("recordPartialKept 失败: {}", e.getMessage());
+        }
+    }
+
+    /** 超时后断点续写成功(无感修复)次数 — 与 partial.kept 的比值即续写成功率 */
+    public void recordPartialContinued() {
+        try {
+            Counter.builder("gagneflow.addrf.partial.continued")
+                    .description("Timeout partial outputs successfully continued to completion")
+                    .register(registry)
+                    .increment();
+        } catch (Exception e) {
+            logger.trace("recordPartialContinued 失败: {}", e.getMessage());
+        }
     }
 
     private static String truncate(String s, int maxLen) {
