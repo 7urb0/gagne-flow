@@ -60,6 +60,10 @@ export interface LessonPlanRequest {
   stylePreference?: string;
   assignmentRequirement?: string;
   specialRequirements?: string;
+  /** 课题名（可选）：为空时头部回退 "{subject}{grade}教案" */
+  topic?: string;
+  /** 可选章节（2026-09-02 教案结构改造）：不传=默认集，空数组=仅骨架 */
+  optionalSections?: string[];
   Id: string;
   Question: string;
 }

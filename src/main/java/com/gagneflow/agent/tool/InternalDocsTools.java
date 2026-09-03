@@ -20,8 +20,6 @@ public class InternalDocsTools {
     public static final String TOOL_QUERY_INTERNAL_DOCS = "queryInternalDocs";
     private final VectorSearchService vectorSearchService;
     private final K12CurriculumLoader k12Loader;
-    @Value(value="${rag.top-k:3}")
-    private int topK = 3;
     private final ObjectMapper objectMapper = new ObjectMapper();
 
     @Autowired

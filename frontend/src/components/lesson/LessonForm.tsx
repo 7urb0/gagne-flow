@@ -29,6 +29,21 @@ const GRADE_TO_NUM: Record<string, number> = {
   七年级: 7, 八年级: 8, 九年级: 9, 高一: 10, 高二: 11, 高三: 12,
 };
 
+/** 可选章节白名单（与后端 LessonPlanRequest.OPTIONAL_SECTION_WHITELIST 保持一致） */
+const OPTIONAL_SECTIONS = [
+  '学情分析',
+  '教学准备',
+  '板书设计',
+  '作业设计',
+  '思政与安全教育',
+  '跨学科拓展',
+  '教学反思框架',
+  '图示占位',
+] as const;
+
+/** 默认勾选集（与后端 OPTIONAL_SECTION_DEFAULTS 一致） */
+const DEFAULT_SECTIONS: string[] = ['学情分析', '教学准备', '板书设计', '作业设计'];
+
 const PLACEHOLDER_FALLBACK: Record<string, string> = {
   语文: '例：通过朗读和情境体验理解课文内容，掌握重点字词，体会作者情感...',
   数学: '例：掌握一元一次方程的概念和解法，能根据实际问题列方程并正确求解...',
@@ -56,6 +71,8 @@ interface FormValues {
   stylePreference: string;
   assignmentRequirement: string;
   specialRequirements: string;
+  topic: string;
+  optionalSections: string[];
 }
 
 const initialValues: FormValues = {
@@ -70,6 +87,8 @@ const initialValues: FormValues = {
   stylePreference: '',
   assignmentRequirement: '',
   specialRequirements: '',
+  topic: '',
+  optionalSections: [...DEFAULT_SECTIONS],
 };
 
 interface Errors {
@@ -174,7 +193,24 @@ export function LessonForm({
     if (values.stylePreference.trim()) params.stylePreference = values.stylePreference.trim();
     if (values.assignmentRequirement.trim()) params.assignmentRequirement = values.assignmentRequirement.trim();
     if (values.specialRequirements.trim()) params.specialRequirements = values.specialRequirements.trim();
+    if (values.topic.trim()) params.topic = values.topic.trim();
+    // 可选章节: 与默认集一致时不传(后端走 null=默认), 否则传当前勾选(空数组=仅骨架)
+    if (
+      values.optionalSections.length !== DEFAULT_SECTIONS.length ||
+      values.optionalSections.some((s) => !DEFAULT_SECTIONS.includes(s))
+    ) {
+      params.optionalSections = [...values.optionalSections];
+    }
     onSubmit(params, uploadedNames);
+  };
+
+  const toggleSection = (sec: string) => {
+    setValues((prev) => ({
+      ...prev,
+      optionalSections: prev.optionalSections.includes(sec)
+        ? prev.optionalSections.filter((s) => s !== sec)
+        : [...prev.optionalSections, sec],
+    }));
   };
 
   const FieldError = ({ msg }: { msg?: string }) =>
@@ -282,6 +318,75 @@ export function LessonForm({
               </SelectContent>
             </Select>
           </div>
+        </div>
+      </section>
+
+      {/* 教案结构与内容 (2026-09-02 教案结构改造) */}
+      <section className="mb-5 rounded-xl border bg-card p-5 shadow-sm">
+        <div className="mb-3 flex items-center justify-between">
+          <h3 className="text-xs font-bold uppercase tracking-wide text-muted-foreground">
+            教案内容
+          </h3>
+        </div>
+        <div className="grid grid-cols-1 gap-4 md:grid-cols-2">
+          <div>
+            <Label className="mb-1.5 block text-xs">
+              课题名
+              <span className="ml-1 font-normal text-muted-foreground/70">选填 · 会显示在教案头部</span>
+            </Label>
+            <Input
+              value={values.topic}
+              placeholder="如：两位数乘一位数（不进位）"
+              onChange={(e) => set('topic', e.target.value)}
+              className="text-xs"
+            />
+          </div>
+        </div>
+        <div className="mt-4">
+          <div className="flex items-center justify-between">
+            <Label className="text-xs">
+              附加章节
+              <span className="ml-2 font-normal text-muted-foreground/70">
+                固定包含：教学目标 / 教学重难点 / 教学过程
+              </span>
+            </Label>
+            <button
+              type="button"
+              className="text-xs text-muted-foreground underline-offset-2 hover:text-foreground hover:underline"
+              onClick={() => setValues((prev) => ({ ...prev, optionalSections: [...DEFAULT_SECTIONS] }))}
+            >
+              恢复默认
+            </button>
+          </div>
+          <div className="mt-2 grid grid-cols-2 gap-2 md:grid-cols-4">
+            {OPTIONAL_SECTIONS.map((sec) => {
+              const checked = values.optionalSections.includes(sec);
+              return (
+                <label
+                  key={sec}
+                  className={
+                    'flex cursor-pointer items-center gap-2 rounded-md border px-2.5 py-2 text-xs transition-colors ' +
+                    (checked
+                      ? 'border-primary/60 bg-primary/5 text-foreground'
+                      : 'border-border text-muted-foreground hover:bg-muted/50')
+                  }
+                >
+                  <input
+                    type="checkbox"
+                    className="h-3.5 w-3.5 accent-primary"
+                    checked={checked}
+                    onChange={() => toggleSection(sec)}
+                  />
+                  {sec}
+                </label>
+              );
+            })}
+          </div>
+          {values.optionalSections.length === 0 && (
+            <p className="mt-2 text-xs text-muted-foreground">
+              已选择仅骨架模式（不含任何附加章节）
+            </p>
+          )}
         </div>
       </section>
 

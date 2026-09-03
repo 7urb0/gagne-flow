@@ -64,7 +64,11 @@ gagneflow:
     # Analysis 前置意图理解 + 澄清问题(2026-08-18 一期): 建议式推送不阻塞
     analysis-clarify-enabled: ${ADDRF_CLARIFY_ENABLED:true}
     # 2026-08-19 二期: 澄清等待用户回答的窗口(秒), 超时降级不阻塞
-    clarify-wait-seconds: ${ADDRF_CLARIFY_WAIT_SECONDS:45}
+    # 2026-08-31: 默认 45->90(真实用户打字/思考需要时间; 与 @Value 默认同步)
+    clarify-wait-seconds: ${ADDRF_CLARIFY_WAIT_SECONDS:90}
+    # 2026-08-31: copilot 阶段确认等待(秒), 由硬编码 120s 提为可配默认 180s
+    # (需与前端 CopilotConfirm.AWAIT_TIMEOUT_SEC 保持同步)
+    await-timeout-seconds: ${ADDRF_AWAIT_TIMEOUT_SECONDS:180}
     # Analysis 结果缓存 TTL(小时), 1h -> 6h 减少重复 LLM 调用
     analysis-cache-ttl-hours: ${ADDRF_ANALYSIS_CACHE_TTL_HOURS:6}
     # 2026-08-19: 反哺综合分权重 — 用户评分占比(0-1), LLM 分占比 = 1-weight
@@ -253,7 +257,6 @@ document:
     overlap: ${DOCUMENT_CHUNK_OVERLAP:160}
 
 rag:
-  top-k: ${RAG_TOP_K:3}
   model: ${RAG_MODEL:qwen-max-latest}
   relevance-threshold: ${RAG_RELEVANCE_THRESHOLD:0.3}
   query-rewrite:

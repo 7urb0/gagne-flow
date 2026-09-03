@@ -56,6 +56,9 @@ public class AddrfPipeline {
     private static final int TOKENS_GENERAL = 5000;
     private static final int TOKENS_CONTENT = 8000;
     private static final int TOKENS_CONTENT_TEXT_HEAVY = 10000;
+    // 2026-08-31: 上传参考资料注入上限(条数/单条截断)
+    private static final int UPLOADED_DOCS_TOP_K = 3;
+    private static final int UPLOADED_DOC_SNIPPET_CHARS = 400;
     private static final Set<String> TEXT_HEAVY_SUBJECTS = Set.of("\u8bed\u6587", "\u82f1\u8bed", "\u5386\u53f2", "\u653f\u6cbb");
     private static final String DEGRADED_PREFIX = "[\u7cfb\u7edf\u63d0\u793a";
     private final PromptLoader promptLoader;
@@ -79,6 +82,9 @@ public class AddrfPipeline {
     // 2026-08-23 quick 直出 HTML: 降级指标(PipelineMetrics 字段注入, 可空容错, 避免破坏直接 new 构造的单测)
     @Autowired(required = false)
     private com.gagneflow.service.metrics.PipelineMetrics pipelineMetrics;
+    // 2026-08-31: 上传参考资料检索注入(修复"传了资料但生成不用"的传导断链; 字段注入可空容错)
+    @Autowired(required = false)
+    private com.gagneflow.service.vector.VectorSearchService vectorSearchService;
     // 2026-08-19 修复: 单例 future 多用户并发互相覆盖 -> 按 sessionId 隔离
     private final ConcurrentHashMap<String, CompletableFuture<Void>> reviewFutures = new ConcurrentHashMap<>();
     @Deprecated
@@ -92,9 +98,12 @@ public class AddrfPipeline {
     // 2026-08-18: Analysis 意图理解 + 澄清(一期)
     @org.springframework.beans.factory.annotation.Value("${gagneflow.addrf.analysis-clarify-enabled:true}")
     private boolean analysisClarifyEnabled;
-    // 2026-08-19: 澄清等待用户回答的窗口(秒), 超时降级不阻塞
-    @org.springframework.beans.factory.annotation.Value("${gagneflow.addrf.clarify-wait-seconds:45}")
-    private long clarifyWaitSeconds = 45L;
+    // 2026-08-19: 澄清等待用户回答的窗口(秒), 超时降级不阻塞; 2026-08-31 默认 45->90(真实用户打字/思考需要时间)
+    @org.springframework.beans.factory.annotation.Value("${gagneflow.addrf.clarify-wait-seconds:90}")
+    private long clarifyWaitSeconds = 90L;
+    // 2026-08-31: copilot stage_await 等待用户确认的超时(秒), 由硬编码 120s 提为可配且默认 180s(与前端 CopilotConfirm.AWAIT_TIMEOUT_SEC 同步)
+    @org.springframework.beans.factory.annotation.Value("${gagneflow.addrf.await-timeout-seconds:180}")
+    private long awaitTimeoutSeconds = 180L;
     // 2026-08-18: Analysis 缓存 TTL(小时), 由 1h 延长至 6h 减少重复调用
     @org.springframework.beans.factory.annotation.Value("${gagneflow.addrf.analysis-cache-ttl-hours:6}")
     private int analysisCacheTtlHours;
@@ -231,6 +240,15 @@ public class AddrfPipeline {
         logger.info("[ADDRF] Pipeline \u9636\u6bb5\u914d\u7f6e: {} (\u5b9e\u9645\u6267\u884c\u987a\u5e8f\u4e3a: analysis \u2192 design\u2225development \u2192 format \u2192 review(\u5f02\u6b65))", stages);
     }
 
+    /** 从表单请求构造教案头部信息（2026-09-02 教案结构改造） */
+    private static LessonHeader buildHeader(LessonPlanRequest request) {
+        if (request == null) {
+            return null;
+        }
+        return new LessonHeader(request.getTopic(), request.getStage(), request.getGrade(),
+                request.getSubject(), request.getHours());
+    }
+
     static ThreadPoolExecutor createDefaultExecutor() {
         return new ThreadPoolExecutor(2, 4, 60L, TimeUnit.SECONDS, new LinkedBlockingQueue<Runnable>(50), new ThreadPoolExecutor.CallerRunsPolicy());
     }
@@ -244,12 +262,13 @@ public class AddrfPipeline {
     public AddrfResult executeQuick(LessonPlanRequest request, ChatModelPort chatModel, SseEmitter emitter,
                                     String sessionContext, Long userId, String sessionId) {
         AddrfResult result = new AddrfResult();
+        result.lessonHeader = buildHeader(request);
         if (sessionId != null) {
             this.activeResults.put(sessionId, result);
         }
         try {
             String k12Ctx = this.loadK12Context(request);
-            String initialInput = this.buildInitialInput(request, k12Ctx, sessionContext);
+            String initialInput = this.buildInitialInput(request, k12Ctx, sessionContext, userId);
             // 2026-08-23 quick 升级: 优先 LLM 直出 HTML(绕开 simpleMarkdown 围栏/表格漂移), 含 MD 特征时降级 MD 路径。
             String quickPrompt = this.loadPrompt("addrf_quick_html", userId);
             quickPrompt = this.appendPersonalizedContext(quickPrompt, userId, sessionId, "quick");
@@ -267,10 +286,10 @@ public class AddrfPipeline {
                 }
                 logger.warn("[ADDRF-QUICK] \u68c0\u6d4b\u5230 Markdown \u7279\u5f81, \u964d\u7ea7 MD \u8def\u5f84: uid={}, sid={}", userId, sessionId);
                 result.development = quickOut;
-                result.html = this.formatTool.format("", "", quickOut, "");
+                result.html = this.formatTool.format(result.lessonHeader, "", "", quickOut, "");
             } else {
                 // 主路径: 直出 HTML(Jsoup 白名单消毒 -> emoji 安全化 -> 套外壳)
-                result.html = this.formatTool.formatDirect(quickOut);
+                result.html = this.formatTool.formatDirect(quickOut, result.lessonHeader);
             }
             this.emitStageCompleteFull(emitter, "stage:format", result.html, sessionId);
             logger.info("[ADDRF-QUICK] \u5feb\u901f\u6559\u6848\u751f\u6210\u5b8c\u6210: {} \u5b57\u7b26, subject={}, uid={}, sid={}, mdFallback={}",
@@ -310,12 +329,13 @@ public class AddrfPipeline {
             CompletableFuture<Void> devFuture;
             block17: {
                 result = new AddrfResult();
+                result.lessonHeader = buildHeader(request);
                 // 2026-08-18: 注册进行中的 result, 供用户评分接口写入(execute 返回时移除)
                 if (sessionId != null) {
                     this.activeResults.put(sessionId, result);
                 }
                 k12Ctx = this.loadK12Context(request);
-                String initialInput = this.buildInitialInput(request, k12Ctx, sessionContext);
+                String initialInput = this.buildInitialInput(request, k12Ctx, sessionContext, userId);
                 logger.info("[ADDRF] \u9636\u6bb51: Analysis \u5f00\u59cb");
                 // Analysis \u7f13\u5b58: \u540c\u4e00\u7528\u6237\u76f8\u540c\u5b66\u6bb5+\u5e74\u7ea7+\u5b66\u79d1\u53ef\u590d\u7528
                 String analysisCacheKey = buildAnalysisCacheKey(userId, request);
@@ -437,14 +457,14 @@ public class AddrfPipeline {
         if (devDegraded) {
             result.development = "\uff08\u6b64\u90e8\u5206\u5f85\u8865\u5145\uff09\n\n> **\u26a0 \u8be5\u9636\u6bb5\u751f\u6210\u8d85\u65f6\u6216\u5931\u8d25\uff0c\u4ec5\u5c55\u793a\u5df2\u751f\u6210\u7684\u5206\u6790\u4e0e\u8bbe\u8ba1\u5185\u5bb9\u3002\u53ef\u5c1d\u8bd5\u51cf\u5c11\u8bfe\u65f6\u6570\u540e\u91cd\u65b0\u751f\u6210\u3002**";
         }
-        result.html = this.formatTool.format(result.analysis, result.design, result.development, "");
+        result.html = this.formatTool.format(result.lessonHeader, result.analysis, result.design, result.development, "");
         this.emitStageComplete(emitter, "stage:format", result.html, sessionId);
         if (!devDegraded && result.development != null && !result.development.startsWith(DEGRADED_PREFIX)) {
             String finalK12 = k12Ctx;
             String finalSubject = request.getSubject();
             CompletableFuture<Void> reviewTask = CompletableFuture.runAsync(() -> {
                 logger.info("[ADDRF] Review \u540e\u53f0\u5f00\u59cb");
-                this.asyncReview(result, chatModel, enhancedDevPrompt, emitter, finalK12, finalSubject, userId, sessionId);
+                this.asyncReview(result, chatModel, enhancedDevPrompt, emitter, finalK12, finalSubject, userId, sessionId, buildSectionPlanText(request));
                 logger.info("[ADDRF] Review \u540e\u53f0\u5b8c\u6210, \u8bc4\u5206: {}", (Object)result.score);
                 // 2026-08-18: 用户低分一票否决(1-2星) -> 无论 LLM 分, 标记人工审核
                 if (result.userScore >= 1 && result.userScore <= 2) {
@@ -458,7 +478,7 @@ public class AddrfPipeline {
                         request.getSubject(), result.score, userId);
                 }
                 try {
-                    result.html = this.formatTool.format(result.analysis, result.design, result.development, result.review);
+                    result.html = this.formatTool.format(result.lessonHeader, result.analysis, result.design, result.development, result.review);
                     emitter.send(SseEmitter.event().name("message").data(Map.of("type", "stage:format", "content", result.html, "stage", "format", "updated", true, "sessionId", sessionId)));
                 }
                 catch (IllegalStateException e) {
@@ -646,10 +666,16 @@ public class AddrfPipeline {
         return this.callAgent(chatModel, systemPrompt, userInput, emitter, stage, mode, timeoutSec, subject, sessionId);
     }
 
-    private void asyncReview(AddrfResult result, ChatModelPort chatModel, String devPrompt, SseEmitter emitter, String k12Ctx, String subject, Long userId, String sessionId) {
+    private void asyncReview(AddrfResult result, ChatModelPort chatModel, String devPrompt, SseEmitter emitter, String k12Ctx, String subject, Long userId, String sessionId, String sectionPlan) {
         int prevScore = -1;
         for (int retryCount = 0; !(retryCount > 2 || result.development != null && result.development.startsWith(DEGRADED_PREFIX)); ++retryCount) {
             String reviewPrompt = this.loadPrompt("addrf_review", userId) + "\n\n\u8bfe\u7a0b\u6807\u51c6\uff1a\n" + k12Ctx;
+            // 2026-08-31: Review 感知用户章节计划 — 按用户定制结构校验完整性, 而非固定默认模板
+            // (消除"用户自定义结构被 Review 判低分 -> 自愈拉回默认结构"的对抗)
+            if (sectionPlan != null && !sectionPlan.isBlank()) {
+                reviewPrompt += "\n\n【本次交付章节计划】\n" + sectionPlan
+                        + "\n（按以上计划校验章节完整性；用户未勾选/未要求的默认附加小节缺失不扣分；用户特殊要求与默认结构冲突时以用户为准。）";
+            }
             // 个性化注入: 用户评价标准入 Review 评分(核心), 避免按通用标准误判个性化教案
             reviewPrompt = this.appendPersonalizedContext(reviewPrompt, userId, sessionId, "review");
             String reviewRaw = this.callAgentJson(chatModel, reviewPrompt, result.development, null, "review", "quick", 60, subject, sessionId);
@@ -698,7 +724,7 @@ public class AddrfPipeline {
      */
     private void pushRefreshedDevelopment(SseEmitter emitter, AddrfResult result, String sessionId) {
         try {
-            result.html = this.formatTool.format(result.analysis, result.design, result.development, result.review);
+            result.html = this.formatTool.format(result.lessonHeader, result.analysis, result.design, result.development, result.review);
         } catch (Exception e) {
             logger.warn("[ADDRF-REVIEW] \u81ea\u6108\u540e\u91cd\u65b0\u683c\u5f0f\u5316\u5931\u8d25: {}", e.getMessage());
             return;
@@ -973,7 +999,7 @@ public class AddrfPipeline {
         copilotQueues.put(token, queue);
         try {
             emitter.send(SseEmitter.event().name("message").data(Map.of("type", "stage_await", "stage", stage, "token", token, "content", preview)));
-            String action = (String)queue.poll(120L, TimeUnit.SECONDS);
+            String action = (String)queue.poll(this.awaitTimeoutSeconds, TimeUnit.SECONDS);
             if (action == null) {
                 String string2 = null;
                 return string2;
@@ -1068,7 +1094,7 @@ public class AddrfPipeline {
         }
     }
 
-    private String buildInitialInput(LessonPlanRequest req, String k12Ctx, String sessionContext) {
+    private String buildInitialInput(LessonPlanRequest req, String k12Ctx, String sessionContext, Long userId) {
         String analysisExtra;
         StringBuilder sb = new StringBuilder();
         if (sessionContext != null && !sessionContext.isEmpty()) {
@@ -1084,10 +1110,87 @@ public class AddrfPipeline {
         if (!k12Ctx.isEmpty()) {
             sb.append("\u8bfe\u7a0b\u6807\u51c6\u53c2\u8003\uff1a\n").append(k12Ctx).append("\n\n");
         }
+        // 2026-08-31: 上传参考资料检索注入(仅用户确实上传了文件时触发; 失败/无结果静默跳过)
+        String uploadedCtx = this.retrieveUploadedContext(req, userId);
+        if (!uploadedCtx.isEmpty()) {
+            sb.append(uploadedCtx).append("\n\n");
+        }
         if (!(analysisExtra = this.subjectFormatLoader.getAnalysisExtra(req.getSubject())).isEmpty()) {
             sb.append(analysisExtra).append("\n");
         }
+        // 2026-09-02 教案结构改造: 交付章节要求(固定骨架 + 用户勾选模块), 注入所有阶段输入
+        return appendSectionPlan(sb.toString(), req);
+    }
+
+    /**
+     * 2026-09-02 教案结构改造 v1: 追加"教案交付章节要求"段落。
+     * 所有阶段(analysis/design/development/quick)共享该输入 —— LLM 据此输出教师视角章节,
+     * 与 FormatTool 的交付章节过滤层(DELIVERABLE_KEYWORDS)共同保证交付结构。
+     * 未勾选模块由 prompt 约束不输出; format 层白名单兜底防 LLM 乱出中间产物。
+     */
+    private static String appendSectionPlan(String baseInput, LessonPlanRequest req) {
+        if (baseInput == null) {
+            return "";
+        }
+        if (req == null) {
+            return baseInput;
+        }
+        return baseInput + "\n\n" + buildSectionPlanText(req);
+    }
+
+    /**
+     * 2026-08-31: 生成「教案交付章节要求」计划文本(生成与 Review 共用的单一数据源)。
+     * Review 阶段按此计划校验章节完整性, 而非固定默认模板 — 避免"用户自定义结构被 Review 拉回"的对抗。
+     */
+    static String buildSectionPlanText(LessonPlanRequest req) {
+        java.util.List<String> chosen = req == null ? java.util.List.of() : req.resolveOptionalSections();
+        StringBuilder sb = new StringBuilder();
+        sb.append("教案交付章节要求（必须严格遵守）：\n");
+        sb.append("- 固定骨架（必须包含）：教学目标、教学重难点、教学过程；多课时时教学过程需按「第 X 课时」分节。\n");
+        if (!chosen.isEmpty()) {
+            sb.append("- 用户勾选的附加模块（必须输出对应章节）：").append(String.join("、", chosen)).append("。\n");
+        }
+        sb.append("- 未列入以上清单的模块不得输出独立章节（除非用户特殊要求明确指定）。");
         return sb.toString();
+    }
+
+    /**
+     * 2026-08-31: 检索用户上传参考资料的摘要, 供生成 prompt 注入。
+     * 仅当用户确实上传了文件时触发; 检索失败/无结果静默返回空串, 不阻塞生成。
+     * 包级可见以便单测。
+     */
+    String retrieveUploadedContext(LessonPlanRequest request, Long userId) {
+        if (this.vectorSearchService == null || request.getUploadedFileNames() == null
+                || request.getUploadedFileNames().isEmpty()) {
+            return "";
+        }
+        try {
+            String query = (request.getGoals() == null ? "" : request.getGoals()) + " " + request.getSubject();
+            List<com.gagneflow.service.vector.VectorSearchService.SearchResult> hits =
+                    this.vectorSearchService.searchUploadedDocs(query, userId, UPLOADED_DOCS_TOP_K);
+            if (hits == null || hits.isEmpty()) {
+                return "";
+            }
+            StringBuilder sb = new StringBuilder("\u3010\u53c2\u8003\u8d44\u6599\uff08\u6765\u81ea\u7528\u6237\u4e0a\u4f20\u6587\u6863\u7684\u68c0\u7d22\u63d0\u70bc\uff09\u3011\n");
+            int used = 0;
+            for (com.gagneflow.service.vector.VectorSearchService.SearchResult hit : hits) {
+                if (hit == null || hit.getContent() == null || hit.getContent().isBlank()) {
+                    continue;
+                }
+                String c = hit.getContent();
+                if (c.length() > UPLOADED_DOC_SNIPPET_CHARS) {
+                    c = c.substring(0, UPLOADED_DOC_SNIPPET_CHARS) + "...";
+                }
+                sb.append("- ").append(c).append("\n");
+                if (++used >= UPLOADED_DOCS_TOP_K) {
+                    break;
+                }
+            }
+            return used == 0 ? "" : sb.toString();
+        } catch (Exception e) {
+            logger.warn("[ADDRF] 上传资料检索失败, 跳过注入: {}", e.getMessage());
+            return "";
+        }
     }
 
     /**
@@ -1463,6 +1566,8 @@ public class AddrfPipeline {
         public volatile int userScore = 0;
         // 阶段C: 回灌延后到评分窗口关闭时定案(用户低分否决能正确阻断入库)。主线程置位并暂存参数。
         public volatile boolean scheduleBackfill = false;
+        // 2026-09-02 教案结构改造: 教学基本信息(课题/学段/年级/学科/课时), format 渲染头部
+        public volatile LessonHeader lessonHeader = null;
         public volatile Long backfillUid = null;
         public volatile String backfillSubject = null;
 

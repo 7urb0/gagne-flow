@@ -1,6 +1,7 @@
 package com.gagneflow.service.memory;
 
 import java.time.Duration;
+import java.time.Instant;
 import java.util.ArrayList;
 import java.util.Collections;
 import java.util.HashMap;
@@ -240,14 +241,23 @@ public class LongTermMemoryService {
             }
             String key = this.sessionKey(userId, sessionId);
             String globalKey = this.globalKey(userId);
+            // 2026-08-31 修复 TTL 击穿: 事实遗忘期从原始 createTime 起算, 超 30 天不再从 MySQL 复活;
+            // 存活事实的 Redis TTL = 30 天 - 已存活时长(原实现重建时重置 30 天 TTL, 事实永不真正过期)
+            long maxAgeMs = Duration.ofDays(30L).toMillis();
             for (LtmFact row : rows) {
                 try {
+                    Instant createTime = row.getCreateTime();
+                    long ageMs = createTime == null ? 0L : System.currentTimeMillis() - createTime.toEpochMilli();
+                    if (createTime != null && ageMs >= maxAgeMs) {
+                        continue; // 已过遗忘期, 不复活
+                    }
+                    long remainingTtlMs = maxAgeMs - Math.max(ageMs, 0L);
                     this.redisTemplate.opsForSet().add(key, row.getFactId());
                     String detailKey = DETAIL_KEY_PREFIX + row.getFactId();
                     String sourcePhase = row.getSourcePhase() != null ? row.getSourcePhase() : SOURCE_SUMMARY;
                     this.redisTemplate.opsForValue().set(detailKey,
                             row.getFactText() + "|" + sourcePhase + "|" + System.currentTimeMillis() + "|0",
-                            Duration.ofDays(30L));
+                            Duration.ofMillis(remainingTtlMs));
                     // 重建时同步恢复全局集合标记
                     if (SOURCE_USER.equals(sourcePhase) || SOURCE_FINAL.equals(sourcePhase)) {
                         this.redisTemplate.opsForSet().add(globalKey, row.getFactId());
@@ -645,21 +655,6 @@ public class LongTermMemoryService {
             this.ltmFactRepository.deleteByUserIdAndSessionId(uid, sessionId);
         } catch (Exception e) {
             logger.warn("LTM MySQL 清理失败: {}", e.getMessage());
-        }
-    }
-
-    public void storeUserPreference(Long userId, String subject, String grade) {
-        String key = LTM_KEY_PREFIX + userId + ":prefs";
-        HashMap<String, String> prefs = new HashMap<String, String>();
-        prefs.put("subject", subject);
-        prefs.put("grade", grade);
-        prefs.put("lastUsed", String.valueOf(System.currentTimeMillis()));
-        this.redisTemplate.opsForHash().putAll(key, prefs);
-        // 用户偏好添加90天TTL，避免永久占用
-        try {
-            this.redisTemplate.expire(key, Duration.ofDays(90L));
-        } catch (Exception e) {
-            logger.trace("设置用户偏好 TTL 失败: {}", e.getMessage());
         }
     }
 

@@ -39,7 +39,7 @@ class GagneFlowIntegrationTest {
     @DisplayName("FormatTool can render template without throwing")
     void formatToolRendersTemplate() {
         FormatTool formatTool = new FormatTool();
-        String html = formatTool.format("分析内容", "设计内容", "开发内容", "评审意见");
+        String html = formatTool.format(null, "分析内容", "设计内容", "开发内容", "评审意见");
         assertNotNull(html, "HTML output should not be null");
         assertTrue(html.length() > 50, "HTML output should be substantial");
         assertTrue(html.contains("分析内容"), "HTML should contain analysis content");

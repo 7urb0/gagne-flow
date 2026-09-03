@@ -37,8 +37,8 @@ class AddrfPipelineOrchestrationTest {
 
     private FormatTool mockFormatTool() {
         FormatTool ft = mock(FormatTool.class);
-        when(ft.format(any(), any(), any(), any())).thenReturn("<html>test</html>");
-        when(ft.formatDirect(anyString())).thenReturn("<html>direct</html>");
+        when(ft.format(any(), any(), any(), any(), any())).thenReturn("<html>test</html>");
+        when(ft.formatDirect(anyString(), any())).thenReturn("<html>direct</html>");
         return ft;
     }
 
@@ -175,8 +175,8 @@ class AddrfPipelineOrchestrationTest {
                 newRequest(), port, null, "", 1L, "session-quick-html");
 
         assertNotNull(result.html, "quick direct html should produce html");
-        verify(ft, never()).format(any(), any(), any(), any());
-        verify(ft, times(1)).formatDirect(anyString());
+        verify(ft, never()).format(any(), any(), any(), any(), any());
+        verify(ft, times(1)).formatDirect(anyString(), any());
         assertEquals(0, pipeline.getQuickMarkdownFallbackCount(), "直出HTML不应计入MD降级");
     }
 
@@ -198,7 +198,7 @@ class AddrfPipelineOrchestrationTest {
         assertNotNull(result.html, "MD 降级仍应产出 html");
         assertEquals(1, pipeline.getQuickMarkdownFallbackCount(), "应计一次 MD 降级");
         verify(pm, times(1)).recordQuickFallback();
-        verify(ft, times(1)).format(any(), any(), any(), any());
-        verify(ft, never()).formatDirect(anyString());
+        verify(ft, times(1)).format(any(), any(), any(), any(), any());
+        verify(ft, never()).formatDirect(anyString(), any());
     }
 }

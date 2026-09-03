@@ -47,7 +47,7 @@ class RagServiceQueryStreamTest {
         ReflectionTestUtils.setField(ragService, "queryRewriter", queryRewriter);
         ReflectionTestUtils.setField(ragService, "pipelineMetrics", pipelineMetrics);
         ReflectionTestUtils.setField(ragService, "generation", generation);
-        ReflectionTestUtils.setField(ragService, "topK", 3);
+        // 2026-08-31: rag.top-k 已删除(误导性配置), 最终送文档数由 rerankTopN 控制
         ReflectionTestUtils.setField(ragService, "model", "qwen-max-latest");
         ReflectionTestUtils.setField(ragService, "apiKey", "test-api-key");
         ReflectionTestUtils.setField(ragService, "relevanceThreshold", 0.3);

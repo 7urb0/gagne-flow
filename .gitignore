@@ -91,3 +91,9 @@ login2.json
 sse_*.txt
 sse_lock*.txt
 token.txt
+
+# 本地调试残留与私有文件
+.local/
+
+# 本地启动脚本(含密钥, 不入库)
+dev-run.ps1

@@ -242,6 +242,27 @@ public class VectorSearchService {
         return Collections.emptyList();
     }
 
+    /**
+     * 2026-08-31: 检索当前用户上传的参考资料, 供教案生成链路注入
+     * (修复"上传资料只入库不使用"的传导断链)。
+     * 过滤: 本人上传文档(_user_id 精确匹配, 排除回灌教案; k12 课标无 _user_id 自然被排除);
+     * 仅粗排不 rerank(生成前摘要用, 控制成本与延迟); 失败由调用方静默兑底。
+     */
+    @CircuitBreaker(name = "milvus", fallbackMethod = "searchUploadedDocsFallback")
+    public List<SearchResult> searchUploadedDocs(String query, Long userId, int topK) {
+        String expr = String.format(
+                "metadata[\"_user_id\"] == \"%s\" && metadata[\"_source\"] != \"generated_lesson_plan\"",
+                String.valueOf(userId != null ? userId : 0L));
+        List<Float> queryVector = this.embeddingService.generateQueryVector(query);
+        return this.searchCollection("biz", query, topK, this.nprobe, queryVector, expr);
+    }
+
+    /** searchUploadedDocs 的熔断降级: 返回空, 调用方跳过注入 */
+    public List<SearchResult> searchUploadedDocsFallback(String query, Long userId, int topK, Throwable t) {
+        logger.warn("[CIRCUIT-BREAKER] 上传资料检索降级为空, 查询: {}, 原因: {}", query, t.getMessage());
+        return Collections.emptyList();
+    }
+
     private List<SearchResult> rerankResults(String query, List<SearchResult> candidates, int topK) {
         try {
             List<String> documents = candidates.stream().map(SearchResult::getContent).collect(Collectors.toList());

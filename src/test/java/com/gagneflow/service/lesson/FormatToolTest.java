@@ -14,34 +14,40 @@ class FormatToolTest {
         formatTool = new FormatTool();
     }
 
+    // 2026-09-02 教案结构改造: format 以 LessonHeader + 平铺内容为签名(5参: header + 3内容 + review兼容)
+    private static final LessonHeader HEADER = new LessonHeader("两位数乘一位数", "小学", 3, "数学", 1);
+
     @Test
     void format_shouldReturnValidHtml() {
-        String result = formatTool.format("分析内容", "设计内容", "过程内容", "评估内容");
+        String result = formatTool.format(HEADER, "分析内容", "设计内容", "过程内容", "");
 
         assertNotNull(result);
         assertTrue(result.startsWith("<!DOCTYPE html>"), "应该以 HTML doctype 开头");
-        assertTrue(result.contains("<h1>教案</h1>"), "应该包含标题");
+        assertTrue(result.contains("<h1>两位数乘一位数</h1>"), "头部应渲染课题名");
+        assertTrue(result.contains("小学 · 3年级 · 数学 · 共 1 课时"), "应渲染元信息行");
         assertTrue(result.contains("</html>"), "应该包含闭合标签");
     }
 
     @Test
-    void format_shouldContainAllSections() {
-        String result = formatTool.format("教学分析A", "教学设计B", "教学过程C", "质量评估D");
+    void format_shouldFlattenContents() {
+        // 2026-09-02: 不再按阶段壳包裹, 三段内容平铺进交付教案
+        String result = formatTool.format(HEADER, "学情正文A", "设计正文B", "过程正文C", "");
 
-        assertTrue(result.contains("教学分析"));
-        assertTrue(result.contains("教学分析A"));
-        assertTrue(result.contains("教学设计"));
-        assertTrue(result.contains("教学设计B"));
-        assertTrue(result.contains("教学过程"));
-        assertTrue(result.contains("教学过程C"));
-        // 2026-08-22: 质量评估(Review)不再写入教案正文, 由 SSE stage:review 独立下发
-        assertFalse(result.contains("质量评估"), "教案正文不应包含质量评估节");
-        assertFalse(result.contains("质量评估D"), "教案正文不应包含 review 内容");
+        assertTrue(result.contains("学情正文A"));
+        assertTrue(result.contains("设计正文B"));
+        assertTrue(result.contains("过程正文C"));
+        assertFalse(result.contains("教学评估"), "教案正文不应包含质量评估/教学评估节");
+    }
+
+    @Test
+    void format_header_withoutTopic_usesSubjectFallback() {
+        String result = formatTool.format(new LessonHeader(null, "小学", 3, "数学", 1), "a", "b", "c", "");
+        assertTrue(result.contains("<h1>数学3教案</h1>"), "无课题时应回退 {学科}{年级}教案");
     }
 
     @Test
     void format_shouldContainStylesheet() {
-        String result = formatTool.format("a", "b", "c", "d");
+        String result = formatTool.format(HEADER, "a", "b", "c", "");
 
         assertTrue(result.contains("@page{size:A4;"), "应该包含打印样式");
         assertTrue(result.contains("font-family"), "应该包含字体样式");
@@ -49,26 +55,18 @@ class FormatToolTest {
 
     @Test
     void format_shouldHandleEmptyContent() {
-        String result = formatTool.format("", "", "", "");
+        String result = formatTool.format(HEADER, "", "", "", "");
 
         assertNotNull(result);
-        assertTrue(result.contains("教学分析"));
-        assertTrue(result.contains("教学设计"));
-        assertTrue(result.contains("教学过程"));
-        assertFalse(result.contains("质量评估"), "教案正文不应包含质量评估节");
+        assertTrue(result.contains("此部分未生成或生成失败"), "空内容应渲染占位提示");
     }
 
     @Test
     void format_shouldHandleNullContent_withPlaceholder() {
-        String result = formatTool.format(null, null, null, null);
+        String result = formatTool.format(HEADER, null, null, null, "");
 
         assertNotNull(result);
-        // toSection 方法将 null/blank 替换为占位符文本
-        assertTrue(result.contains("此部分将在后台自动生成"));
-        assertTrue(result.contains("教学分析"));
-        assertTrue(result.contains("教学设计"));
-        assertTrue(result.contains("教学过程"));
-        assertFalse(result.contains("质量评估"), "教案正文不应包含质量评估节");
+        assertTrue(result.contains("此部分未生成或生成失败"), "null 内容应渲染占位提示");
     }
 
     @Test
@@ -104,7 +102,7 @@ class FormatToolTest {
     @Test
     void format_shouldNotContainEmoji() {
         // 完整 format 出口不应残留 emoji(含板书设计的 🌟 等)
-        String html = formatTool.format("分析🌟", "设计", "板书: \uD83C\uDF1F 主题", "评估");
+        String html = formatTool.format(HEADER, "分析🌟", "设计", "板书: \uD83C\uDF1F 主题", "");
         assertFalse(html.contains("\uD83C\uDF1F"), "format 输出不应含 emoji");
         assertTrue(html.contains("分析"), "内容应保留");
     }
@@ -186,5 +184,35 @@ class FormatToolTest {
         String html = FormatTool.simpleMarkdown("| 名称 | 说明 |\n| --- | --- |\n| a \\| b | 字面管道 |");
         assertTrue(html.contains("<td>a | b</td>"), "转义管道应保留在单元格内: " + html);
         assertTrue(html.contains("<td>字面管道</td>"), "第二列应完整渲染: " + html);
+    }
+
+    // ============ 教案结构改造(2026-09-02) ============
+
+    @Test
+    void filterDeliverableSections_keepsOnlyDeliverableH2() {
+        // 中间产物(h2 知识点清单等)应被剔除, 交付章节保留
+        String md = "## 学情分析\n学情正文A\n"
+                + "## 知识点清单\n内部知识列表\n"
+                + "## 教学目标\n目标B";
+        String html = FormatTool.filterDeliverableSections(md);
+        assertTrue(html.contains("学情正文A"), "学情分析应保留");
+        assertTrue(html.contains("目标B"), "教学目标应保留");
+        assertFalse(html.contains("知识点清单"), "知识点清单(中间产物)应被剔除");
+        assertFalse(html.contains("内部知识列表"), "中间产物内容不应进入教案");
+    }
+
+    @Test
+    void filterDeliverableSections_noH2_keepsWholeText() {
+        // 无 ## 结构(降级/占位文本)整体保留, 防丢内容
+        String html = FormatTool.filterDeliverableSections("（此部分待补充）");
+        assertTrue(html.contains("（此部分待补充）"), "无 h2 文本应整体保留");
+    }
+
+    @Test
+    void formatDirect_withHeader_rendersTopicAndMeta() {
+        String html = formatTool.formatDirect("<h2>教学目标</h2><p>知识</p>", HEADER);
+        assertTrue(html.contains("<h1>两位数乘一位数</h1>"), "直出 HTML 应渲染课题头");
+        assertTrue(html.contains("小学 · 3年级 · 数学 · 共 1 课时"), "直出 HTML 应渲染元信息");
+        assertTrue(html.contains("<h2>教学目标</h2>"), "正文片段应保留");
     }
 }

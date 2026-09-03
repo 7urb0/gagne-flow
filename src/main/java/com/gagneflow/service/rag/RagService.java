@@ -38,8 +38,7 @@ public class RagService {
     private PipelineMetrics pipelineMetrics;
     @Value(value="${spring.ai.dashscope.api-key}")
     private String apiKey;
-    @Value(value="${rag.top-k:3}")
-    private int topK;
+    // 2026-08-31: 删除误导性配置 rag.top-k(原只进指标不控制送文档); 最终送文档数由 dashscope.rerank.top-n 决定
     @Value(value="${rag.model:qwen-max-latest}")
     private String model;
     @Value(value="${rag.relevance-threshold:0.3}")
@@ -54,7 +53,7 @@ public class RagService {
     @PostConstruct
     public void init() {
         this.generation = new Generation();
-        logger.info("RAG \u670d\u52a1\u521d\u59cb\u5316\u5b8c\u6210\uff0cmodel: {}, topK: {}", (Object)this.model, (Object)this.topK);
+        logger.info("RAG \u670d\u52a1\u521d\u59cb\u5316\u5b8c\u6210\uff0cmodel: {}", (Object)this.model);
     }
 
     public void queryStream(String question, StreamCallback callback) {
@@ -79,7 +78,7 @@ public class RagService {
             callback.onSearchResults(searchResults);
             if (this.pipelineMetrics != null) {
                 double avg = searchResults.stream().mapToDouble(VectorSearchService.SearchResult::getScore).average().orElse(0.0);
-                this.pipelineMetrics.recordRagSearch(question, System.currentTimeMillis() - startTime, searchResults.size(), Math.min(searchResults.size(), this.topK), avg);
+                this.pipelineMetrics.recordRagSearch(question, System.currentTimeMillis() - startTime, searchResults.size(), Math.min(searchResults.size(), this.rerankTopN), avg);
             }
             if (searchResults.isEmpty()) {
                 logger.warn("\u672a\u627e\u5230\u76f8\u5173\u6587\u6863");

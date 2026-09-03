@@ -24,6 +24,34 @@ public class LessonPlanRequest {
     private @NotBlank(message="\u6559\u5b66\u76ee\u6807\u4e0d\u80fd\u4e3a\u7a7a") @Size(min=2, max=500, message="\u6559\u5b66\u76ee\u6807\u957f\u5ea62-500\u5b57") String goals;
     private String mode = "quick";
     private List<String> uploadedFileNames;
+    /** 课题名（可选）：为空时教案头部回退为 "{学科}{年级}教案"（2026-09-02 教案结构改造） */
+    private String topic;
+    /** 可选章节（2026-09-02 教案结构改造）：用户勾选的教案可选模块；null/空 = 默认集；非法项静默过滤 */
+    private List<String> optionalSections;
+
+    /** 可选章节白名单（固定枚举，前端 checkbox 与后端校验共用语义） */
+    public static final List<String> OPTIONAL_SECTION_WHITELIST = List.of(
+            "学情分析", "教学准备", "板书设计", "作业设计",
+            "思政与安全教育", "跨学科拓展", "教学反思框架", "图示占位");
+    /** 默认勾选集：null/空 optionalSections 时生效 */
+    public static final List<String> OPTIONAL_SECTION_DEFAULTS = List.of(
+            "学情分析", "教学准备", "板书设计", "作业设计");
+
+    /**
+     * 解析有效可选章节：
+     * null(未提交) → 默认集（退步兼容旧客户端）；
+     * 空数组(用户显式全部取消) → 仅骨架(不含附加模块)；
+     * 非空 → 白名单外静默过滤 + 去重。
+     */
+    public List<String> resolveOptionalSections() {
+        if (optionalSections == null) {
+            return OPTIONAL_SECTION_DEFAULTS;
+        }
+        return optionalSections.stream()
+                .filter(OPTIONAL_SECTION_WHITELIST::contains)
+                .distinct()
+                .toList();
+    }
 
     // ---- 2026-08-18 新增: 个性化上下文字段(全可选, 不破坏现有调用) ----
     /** 学情分析: 班级基础/薄弱点/特点, 进 analysis 学情分析 + LTM */
@@ -107,4 +135,10 @@ public class LessonPlanRequest {
 
     public String getSpecialRequirements() { return specialRequirements; }
     public void setSpecialRequirements(String specialRequirements) { this.specialRequirements = specialRequirements; }
+
+    public String getTopic() { return topic; }
+    public void setTopic(String topic) { this.topic = topic; }
+
+    public List<String> getOptionalSections() { return optionalSections; }
+    public void setOptionalSections(List<String> optionalSections) { this.optionalSections = optionalSections; }
 }

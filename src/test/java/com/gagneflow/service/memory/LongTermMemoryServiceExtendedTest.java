@@ -6,11 +6,13 @@ import org.junit.jupiter.api.DisplayName;
 import org.junit.jupiter.api.Nested;
 import org.junit.jupiter.api.Test;
 import org.junit.jupiter.api.extension.ExtendWith;
+import org.mockito.ArgumentCaptor;
 import org.mockito.Mock;
 import org.mockito.junit.jupiter.MockitoExtension;
 import org.mockito.junit.jupiter.MockitoSettings;
 import org.mockito.quality.Strictness;
 import org.springframework.data.redis.core.*;
+import org.springframework.test.util.ReflectionTestUtils;
 
 import java.time.Duration;
 import java.util.*;
@@ -209,16 +211,42 @@ class LongTermMemoryServiceExtendedTest {
         }
     }
 
-    @Nested
-    @DisplayName("User Preference")
-    class UserPreference {
+    @Test
+    @DisplayName("rebuildFromMySql: 超 30 天的事实不再从 MySQL 复活(修复 TTL 击穿)")
+    void rebuildFromMySql_expiredFactNotRevived() {
+        com.gagneflow.entity.LtmFact old = new com.gagneflow.entity.LtmFact();
+        old.setFactId("old-fact");
+        old.setFactText("旧事实内容");
+        old.setSourcePhase(LongTermMemoryService.SOURCE_USER);
+        old.setCreateTime(java.time.Instant.now().minus(Duration.ofDays(40L)));
+        when(ltmFactRepository.findByUserIdAndSessionId(USER_ID, SESSION_ID)).thenReturn(List.of(old));
 
-        @Test
-        @DisplayName("storeUserPreference saves to hash")
-        void storePreference() {
-            service.storeUserPreference(USER_ID, "语文", "三年级");
+        List<LongTermMemoryService.MemoryFact> result = ReflectionTestUtils.invokeMethod(
+                service, "rebuildFromMySql", USER_ID, SESSION_ID, "查询", 3);
 
-            verify(hashOps).putAll(eq("gagneflow:ltm:1:prefs"), anyMap());
-        }
+        verify(valueOps, never()).set(anyString(), anyString(), any(Duration.class));
+        verify(setOps, never()).add(anyString(), eq("old-fact"));
+        assertNotNull(result);
+        assertTrue(result.isEmpty(), "过期事实不复活, merged 为空直接返回");
+    }
+
+    @Test
+    @DisplayName("rebuildFromMySql: 未过期事实复活且 TTL 为剩余遗忘窗口(<30 天)")
+    void rebuildFromMySql_recentFactRevivedWithRemainingTtl() {
+        com.gagneflow.entity.LtmFact recent = new com.gagneflow.entity.LtmFact();
+        recent.setFactId("recent-fact");
+        recent.setFactText("新近事实内容");
+        recent.setSourcePhase(LongTermMemoryService.SOURCE_USER);
+        recent.setCreateTime(java.time.Instant.now().minus(Duration.ofDays(5L)));
+        when(ltmFactRepository.findByUserIdAndSessionId(USER_ID, SESSION_ID)).thenReturn(List.of(recent));
+        when(setOps.members(anyString())).thenReturn(Set.of("recent-fact"));
+        when(embeddingService.generateQueryVector(anyString())).thenReturn(List.of(0.1f));
+
+        ReflectionTestUtils.invokeMethod(service, "rebuildFromMySql", USER_ID, SESSION_ID, "查询", 3);
+
+        ArgumentCaptor<Duration> ttl = ArgumentCaptor.forClass(Duration.class);
+        verify(valueOps).set(contains("recent-fact"), anyString(), ttl.capture());
+        long days = ttl.getValue().toDays();
+        assertTrue(days >= 24 && days < 30, "剩余 TTL 应约为 25 天, 实际: " + ttl.getValue());
     }
 }

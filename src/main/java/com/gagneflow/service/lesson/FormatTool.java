@@ -10,18 +10,108 @@ public class FormatTool {
      * \u7ed9\u524d\u7aef\u5c55\u793a, \u6559\u6848 HTML/PDF \u53ea\u5305\u542b\u6559\u5b66\u5206\u6790/\u8bbe\u8ba1/\u8fc7\u7a0b\u4e09\u8282, \u4e0d\u6df7\u5165\u4e0e\u6559\u5b66\u65e0\u5173\u7684\u5185\u5bb9\u3002
      * review \u53c2\u6570\u4fdd\u7559\u4ec5\u4e3a\u517c\u5bb9\u65e7\u8c03\u7528, \u5185\u90e8\u4e0d\u518d\u6e32\u67d3\u3002
      */
-    public String format(String analysis, String design, String development, String review) {
-        String html = "<!DOCTYPE html>\n<html lang=\"zh-CN\">\n<head>\n<meta charset=\"UTF-8\">\n<title>\u6559\u6848</title>\n<style>\n@page{size:A4;margin:20mm}\n*{margin:0;padding:0;box-sizing:border-box}\nbody{font-family:'SimSun','Songti SC','Arial',serif;font-size:11pt;line-height:1.7;color:#222;margin:0 auto;padding:0}\nh1{font-size:18pt;text-align:center;margin:0 0 12pt;font-family:'SimHei','PingFang SC',sans-serif;font-weight:700;color:#2c2420}\nh2{font-size:13pt;margin:14pt 0 6pt;padding-bottom:3pt;border-bottom:2px solid #2c2420;font-family:'SimHei',sans-serif;font-weight:700;color:#2c2420}\nh3{font-size:11.5pt;margin:10pt 0 4pt;font-family:'SimHei',sans-serif;font-weight:700;color:#3d3430}\np{margin:3pt 0;text-indent:2em;font-size:11pt}\nol,ul{margin:4pt 0 4pt 2.5em;font-size:11pt}\nli{margin:2pt 0}\ntable{border-collapse:collapse;width:100%;margin:8pt 0;font-size:10.5pt}\nth{background:#f0ede8;font-weight:700;border:1px solid #999;padding:4pt 6pt;text-align:center}\ntd{border:1px solid #999;padding:4pt 6pt}\nstrong{color:#c48650;font-weight:700}\npre{background:#f8f6f3;padding:8pt;border-radius:3pt;font-size:10pt;overflow-x:auto}\n.header{text-align:center;margin-bottom:14pt}\n.section{border:1px solid #e0dcd6;border-radius:4pt;padding:6pt 10pt;margin:6pt 0;background:#fdfbf8}\n.section-title{font-weight:700;font-size:12pt;margin-bottom:4pt;color:#2c2420}\n.stage-label{display:inline-block;background:#2c2420;color:#fff;font-size:9pt;padding:2pt 8pt;border-radius:3pt;margin-right:6pt;vertical-align:2pt}\n.img-placeholder{display:block;margin:8pt auto;max-width:90%;padding:8pt;border:1px dashed #ccc;text-align:center;color:#999;font-size:10pt;background:#fafafa;border-radius:4pt}\n</style>\n</head>\n<body>\n<div class=\"header\"><h1>\u6559\u6848</h1></div>\n" + this.toSection("\u6559\u5b66\u5206\u6790", analysis) + this.toSection("\u6559\u5b66\u8bbe\u8ba1", design) + this.toSection("\u6559\u5b66\u8fc7\u7a0b", development) + "</body>\n</html>";
+    /**
+     * 生成教案完整 HTML（2026-09-02 教案结构改造 v1）。
+     * 交付结构 = 教师视角章节（学情分析/教学目标/重难点/教学过程/板书设计/作业设计...），
+     * 不再按流水线阶段（Analysis/Design/Development）包壳——阶段是生成单位，章节是交付单位。
+     * 各阶段输出中的中间产物（知识点清单/课时分布/教学策略等）在渲染时过滤，不进交付教案。
+     * review 参数已废弃（2026-08-22 起质量评估不入教案正文），保留仅为兼容旧调用。
+     *
+     * @param header      教学基本信息（课题/学段/年级/学科/课时，来自表单）
+     * @param analysis    Analysis 阶段输出（Markdown）
+     * @param design      Design 阶段输出（Markdown）
+     * @param development Development 阶段输出（Markdown）
+     */
+    public String format(LessonHeader header, String analysis, String design, String development, String review) {
+        LessonHeader h = header != null ? header : new LessonHeader(null, null, 0, null, 0);
+        String html = "<!DOCTYPE html>\n<html lang=\"zh-CN\">\n<head>\n<meta charset=\"UTF-8\">\n<title>\u6559\u6848</title>\n<style>\n@page{size:A4;margin:20mm}\n*{margin:0;padding:0;box-sizing:border-box}\nbody{font-family:'SimSun','Songti SC','Arial',serif;font-size:11pt;line-height:1.7;color:#222;margin:0 auto;padding:0}\nh1{font-size:18pt;text-align:center;margin:0 0 4pt;font-family:'SimHei','PingFang SC',sans-serif;font-weight:700;color:#2c2420}\nh2{font-size:13pt;margin:14pt 0 6pt;padding-bottom:3pt;border-bottom:2px solid #2c2420;font-family:'SimHei',sans-serif;font-weight:700;color:#2c2420}\nh3{font-size:11.5pt;margin:10pt 0 4pt;font-family:'SimHei',sans-serif;font-weight:700;color:#3d3430}\np{margin:3pt 0;text-indent:2em;font-size:11pt}\nol,ul{margin:4pt 0 4pt 2.5em;font-size:11pt}\nli{margin:2pt 0}\ntable{border-collapse:collapse;width:100%;margin:8pt 0;font-size:10.5pt}\nth{background:#f0ede8;font-weight:700;border:1px solid #999;padding:4pt 6pt;text-align:center}\ntd{border:1px solid #999;padding:4pt 6pt}\nstrong{color:#c48650;font-weight:700}\npre{background:#f8f6f3;padding:8pt;border-radius:3pt;font-size:10pt;overflow-x:auto}\n.header{text-align:center;margin-bottom:14pt}\n.header .meta{text-align:center;font-size:10.5pt;color:#666;margin:0 0 10pt;text-indent:0}\n.img-placeholder{display:block;margin:8pt auto;max-width:90%;padding:8pt;border:1px dashed #ccc;text-align:center;color:#999;font-size:10pt;background:#fafafa;border-radius:4pt}\n</style>\n</head>\n<body>\n<div class=\"header\"><h1>"
+                + FormatTool.escapeHtml(h.title())
+                + "</h1><p class=\"meta\">" + FormatTool.escapeHtml(h.metaLine()) + "</p></div>\n"
+                + this.renderDeliverableBlock(analysis, "\u5b66\u60c5\u5206\u6790")
+                + this.renderDeliverableBlock(design, "\u6559\u5b66\u76ee\u6807\u4e0e\u91cd\u96be\u70b9")
+                + this.renderDeliverableBlock(development, "\u6559\u5b66\u8fc7\u7a0b")
+                + "\n</body>\n</html>";
         // 2026-08-22: emoji 替换/剥离, 防止 PDF 字体缺字形渲染乱码
         return sanitizeEmoji(html);
     }
 
-    private String toSection(String title, String content) {
+    /**
+     * 渲染单个阶段块：按"交付章节白名单"过滤 h2 章节（中间产物如知识点清单/课时分布/教学策略不进交付教案），
+     * 无 h2 结构的文本（降级占位等）整体保留；过滤后为空则整体保留（防丢内容兜底）。
+     */
+    private String renderDeliverableBlock(String content, String fallbackTitle) {
         if (content == null || content.isBlank()) {
-            content = "_\u6b64\u90e8\u5206\u5c06\u5728\u540e\u53f0\u81ea\u52a8\u751f\u6210\uff0c\u8bf7\u7a0d\u540e\u5237\u65b0\u9875\u9762\u67e5\u770b\u3002_";
+            return "<p><em>\uff08" + fallbackTitle + "\uff1a\u6b64\u90e8\u5206\u672a\u751f\u6210\u6216\u751f\u6210\u5931\u8d25\uff0c\u53ef\u7a0d\u540e\u91cd\u8bd5\uff09</em></p>\n";
         }
-        return "<div class=\"section\">\n<div class=\"section-title\"><span class=\"stage-label\">" + title + "</span></div>\n" + FormatTool.simpleMarkdown(content) + "\n</div>\n";
+        return FormatTool.filterDeliverableSections(content);
     }
+
+    /** 交付章节关键词：h2 标题包含任一关键词才进入交付教案（中间产物被过滤） */
+    private static final String[] DELIVERABLE_KEYWORDS = {
+        "\u6559\u5b66\u76ee\u6807", "\u6559\u5b66\u91cd\u96be\u70b9", "\u6559\u5b66\u96be\u70b9", "\u6559\u5b66\u8fc7\u7a0b",
+        "\u5b66\u60c5\u5206\u6790", "\u6559\u5b66\u51c6\u5907", "\u677f\u4e66\u8bbe\u8ba1", "\u4f5c\u4e1a\u8bbe\u8ba1",
+        "\u601d\u653f", "\u8de8\u5b66\u79d1", "\u6559\u5b66\u53cd\u601d", "\u56fe\u793a"
+    };
+
+    static boolean isDeliverableHeading(String heading) {
+        for (String kw : DELIVERABLE_KEYWORDS) {
+            if (heading.contains(kw)) {
+                return true;
+            }
+        }
+        return false;
+    }
+
+    /**
+     * 按 h2（##）切块并只保留交付章节：无 ## 结构的文本整体保留（占位/降级兜底）；
+     * 过滤后为空也整体保留（LLM 未按约定输出章节名时防丢内容）。
+     */
+    static String filterDeliverableSections(String md) {
+        if (md == null || md.isBlank()) {
+            return "";
+        }
+        String[] lines = md.split("\n", -1);
+        boolean hasH2 = false;
+        for (String line : lines) {
+            if (line.trim().startsWith("## ")) {
+                hasH2 = true;
+                break;
+            }
+        }
+        if (!hasH2) {
+            return FormatTool.simpleMarkdown(md);
+        }
+        StringBuilder out = new StringBuilder();
+        StringBuilder cur = new StringBuilder();
+        String curHeading = null;
+        boolean keptAny = false;
+        for (String line : lines) {
+            String trimmed = line.trim();
+            if (trimmed.startsWith("## ")) {
+                if (cur.length() > 0) {
+                    if (curHeading != null && isDeliverableHeading(curHeading)) {
+                        out.append(cur);
+                        keptAny = true;
+                    }
+                    cur.setLength(0);
+                }
+                curHeading = trimmed.substring(3).trim();
+                cur.append(line).append("\n");
+            } else {
+                cur.append(line).append("\n");
+            }
+        }
+        if (cur.length() > 0 && (curHeading == null || isDeliverableHeading(curHeading))) {
+            out.append(cur);
+            keptAny = true;
+        }
+        if (!keptAny) {
+            // LLM 未按约定输出章节名: 整体保留, 防丢内容
+            return FormatTool.simpleMarkdown(md);
+        }
+        return FormatTool.simpleMarkdown(out.toString());
+    }
+
 
     static String simpleMarkdown(String md) {
         if (md == null) {
@@ -282,16 +372,36 @@ public class FormatTool {
      * @param htmlFragment LLM 产出的 HTML 片段(body 内部内容, 无 html/head/body 外壳)
      */
     public String formatDirect(String htmlFragment) {
+        return formatDirect(htmlFragment, null);
+    }
+
+    /**
+     * 直出 HTML 教案（2026-09-02 教案结构改造）：LLM 产 HTML 片段 + 头部基本信息。
+     * 处理链: 头部(表单数据, 后端构造非 LLM) → Jsoup 白名单消毒 → emoji 安全化 → 套统一外壳。
+     * 头部 HTML 由本类构造(标题/元信息均已 escape), 不经过 Jsoup, 故天然无注入风险。
+     */
+    public String formatDirect(String htmlFragment, LessonHeader header) {
         String fragment = htmlFragment != null ? htmlFragment : "";
         // 1) Jsoup 白名单消毒: 剥离 script/style/iframe 及全部非白名单标签/属性, 防止注入
         String cleaned = org.jsoup.Jsoup.clean(fragment, LESSON_SAFELIST);
-        // 2) emoji 安全化(PDF 字体无 emoji 字形)
-        cleaned = sanitizeEmoji(cleaned);
-        // 3) 套统一外壳
-        return wrapWithShell(cleaned);
+        // 2) 头部(表单数据) + emoji 安全化(PDF 字体无 emoji 字形), 套统一外壳
+        return sanitizeEmoji(wrapWithShell(buildHeaderHtml(header) + cleaned));
     }
 
-    /** 复用 format 的 字体链 / A4 分页 / 颜色 外壳, 仅塞入消毒后的正文片段 */
+    /**
+     * 构造教案头部 HTML（教学基本信息，2026-09-02 教案结构改造）。
+     * 标题与元信息均 escape; header 为 null 返回空串(无头部信息时教案不显示头部块)。
+     * 注意: 该方法不经 Jsoup(非 LLM 产物), 返回体须保持与白名单一致的语义化标签。
+     */
+    private static String buildHeaderHtml(LessonHeader header) {
+        if (header == null) {
+            return "";
+        }
+        return "<div class=\"header\"><h1>" + escapeHtml(header.title())
+                + "</h1><p class=\"meta\">" + escapeHtml(header.metaLine()) + "</p></div>\n";
+    }
+
+    /** 复用 format 的 字体链 / A4 分页 / 颜色 外壳, 仅塞入消毒后的正文片段(含可选头部) */
     private String wrapWithShell(String body) {
         String css = "<!DOCTYPE html>\n<html lang=\"zh-CN\">\n<head>\n<meta charset=\"UTF-8\">\n<title>教案</title>\n<style>\n"
             + "@page{size:A4;margin:20mm}\n*{margin:0;padding:0;box-sizing:border-box}\n"
@@ -307,7 +417,9 @@ public class FormatTool {
             + "strong{color:#c48650;font-weight:700}\n"
             + "pre{background:#f8f6f3;padding:8pt;border-radius:3pt;font-size:10pt;overflow-x:auto}\n"
             + ".header{text-align:center;margin-bottom:14pt}\n"
-            + "</style>\n</head>\n<body>\n<div class=\"header\"><h1>教案</h1></div>\n"
+            + ".header h1{font-size:18pt;text-align:center;margin:0 0 4pt;font-family:'SimHei','PingFang SC',sans-serif;font-weight:700;color:#2c2420}\n"
+            + ".header .meta{text-align:center;font-size:10.5pt;color:#666;margin:0 0 10pt;text-indent:0}\n"
+            + "</style>\n</head>\n<body>\n"
             + body + "\n</body>\n</html>";
         return css;
     }

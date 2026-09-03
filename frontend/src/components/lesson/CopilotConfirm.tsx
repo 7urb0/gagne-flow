@@ -7,13 +7,14 @@ import { submitCopilotAction } from '@/api/lesson';
 import { STAGE_LABELS, type StageName } from '@/store/lesson';
 
 /** 后端 emitCopilotAwait 的等待窗口(秒), 与 AddrfPipeline 对齐 */
-const AWAIT_TIMEOUT_SEC = 120;
+const AWAIT_TIMEOUT_SEC = 180;
 
 /**
  * Copilot 分步确认面板
  * 三按钮: 确认继续 / 修改后继续 / 停止生成
  * 提交 POST /api/lesson_plan/action {token, action, stage, instruction}
- * 2026-08-21: 增加超时倒计时提示 — 后端 120s 未收到操作会自动继续, 避免用户困惑"为什么自己走了"
+ * 2026-08-21: 增加超时倒计时提示 — 后端超时未收到操作会自动继续, 避免用户困惑"为什么自己走了"
+ * 2026-08-31: 后端超时由 120s 提为可配(默认 180s), 此常量需与 gagneflow.addrf.await-timeout-seconds 保持同步
  */
 export function CopilotConfirm({
   stage,

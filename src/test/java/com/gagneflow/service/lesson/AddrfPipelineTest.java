@@ -2,6 +2,7 @@ package com.gagneflow.service.lesson;
 
 import com.gagneflow.config.PipelineStageConfig;
 import com.gagneflow.dto.LessonPlanRequest;
+import com.gagneflow.service.vector.VectorSearchService;
 import org.junit.jupiter.api.DisplayName;
 import org.junit.jupiter.api.Nested;
 import org.junit.jupiter.api.Test;
@@ -11,6 +12,7 @@ import org.springframework.web.servlet.mvc.method.annotation.SseEmitter;
 import java.lang.reflect.Field;
 import java.lang.reflect.Method;
 import java.lang.reflect.Modifier;
+import java.util.List;
 import java.util.Map;
 import java.util.concurrent.ConcurrentHashMap;
 import java.util.concurrent.LinkedBlockingQueue;
@@ -20,10 +22,13 @@ import java.util.concurrent.TimeUnit;
 import static org.junit.jupiter.api.Assertions.*;
 import static org.mockito.ArgumentMatchers.any;
 import static org.mockito.ArgumentMatchers.anyInt;
+import static org.mockito.ArgumentMatchers.anyString;
+import static org.mockito.ArgumentMatchers.eq;
 import static org.mockito.Mockito.mock;
 import static org.mockito.Mockito.never;
 import static org.mockito.Mockito.times;
 import static org.mockito.Mockito.verify;
+import static org.mockito.Mockito.when;
 
 @DisplayName("AddrfPipeline unit tests")
 class AddrfPipelineTest {
@@ -961,5 +966,106 @@ class AddrfPipelineTest {
             assertEquals(95, p.resolveFeedbackScore(makeResult(90, 5)));
             ReflectionTestUtils.setField(p, "feedbackUserWeight", 0.6);
         }
+    }
+
+    // ============================================================
+    // retrieveUploadedContext tests (2026-08-31 上传资料检索注入)
+    // ============================================================
+
+    @Test
+    @DisplayName("retrieveUploadedContext: 未上传文件时不触发检索, 返回空串")
+    void retrieveUploadedContext_NoUploads_ReturnsEmpty() {
+        LessonPlanRequest req = new LessonPlanRequest();
+        req.setGoals("理解分数的意义");
+        req.setSubject("数学");
+        assertEquals("", defaultPipeline.retrieveUploadedContext(req, 1L), "uploadedFileNames 为 null 应返回空");
+        req.setUploadedFileNames(List.of());
+        assertEquals("", defaultPipeline.retrieveUploadedContext(req, 1L), "空列表应返回空");
+    }
+
+    @Test
+    @DisplayName("retrieveUploadedContext: 检索服务未注入(单测直 new) -> 返回空串")
+    void retrieveUploadedContext_ServiceNull_ReturnsEmpty() {
+        LessonPlanRequest req = new LessonPlanRequest();
+        req.setUploadedFileNames(List.of("参考.pdf"));
+        assertEquals("", defaultPipeline.retrieveUploadedContext(req, 1L));
+    }
+
+    @Test
+    @DisplayName("retrieveUploadedContext: 检索命中 -> 注入带标题的提炼摘要")
+    void retrieveUploadedContext_WithHits_InjectsSummary() {
+        AddrfPipeline pipeline = new AddrfPipeline(null, null, null, null, null, null, null,
+                new PipelineStageConfig(), null, null, null, null);
+        VectorSearchService searchService = mock(VectorSearchService.class);
+        VectorSearchService.SearchResult hit = new VectorSearchService.SearchResult();
+        hit.setContent("分数的初步认识教学要点：平均分与单位一");
+        when(searchService.searchUploadedDocs(anyString(), eq(1L), eq(3))).thenReturn(List.of(hit));
+        ReflectionTestUtils.setField(pipeline, "vectorSearchService", searchService);
+
+        LessonPlanRequest req = new LessonPlanRequest();
+        req.setGoals("理解分数的意义");
+        req.setSubject("数学");
+        req.setUploadedFileNames(List.of("参考.pdf"));
+
+        String ctx = pipeline.retrieveUploadedContext(req, 1L);
+        assertTrue(ctx.contains("参考资料"), "应含注入标题");
+        assertTrue(ctx.contains("分数的初步认识教学要点"), "应含命中内容");
+    }
+
+    @Test
+    @DisplayName("retrieveUploadedContext: 检索异常 -> 静默返回空串不阻塞生成")
+    void retrieveUploadedContext_SearchFails_ReturnsEmpty() {
+        AddrfPipeline pipeline = new AddrfPipeline(null, null, null, null, null, null, null,
+                new PipelineStageConfig(), null, null, null, null);
+        VectorSearchService searchService = mock(VectorSearchService.class);
+        when(searchService.searchUploadedDocs(anyString(), eq(1L), eq(3)))
+                .thenThrow(new RuntimeException("milvus down"));
+        ReflectionTestUtils.setField(pipeline, "vectorSearchService", searchService);
+
+        LessonPlanRequest req = new LessonPlanRequest();
+        req.setGoals("理解分数的意义");
+        req.setSubject("数学");
+        req.setUploadedFileNames(List.of("参考.pdf"));
+
+        assertEquals("", pipeline.retrieveUploadedContext(req, 1L));
+    }
+
+    // ============================================================
+    // buildSectionPlanText tests (2026-08-31 Review 感知用户章节计划)
+    // ============================================================
+
+    @Test
+    @DisplayName("buildSectionPlanText: null 请求 -> 安全返回(仅固定骨架, 无勾选行)")
+    void buildSectionPlanText_nullRequest_safeDefault() {
+        String plan = AddrfPipeline.buildSectionPlanText(null);
+        assertTrue(plan.contains("固定骨架"));
+        assertFalse(plan.contains("用户勾选的附加模块"));
+    }
+
+    @Test
+    @DisplayName("buildSectionPlanText: 默认集 -> 含 4 项默认附加模块")
+    void buildSectionPlanText_defaultSet_containsDefaults() {
+        String plan = AddrfPipeline.buildSectionPlanText(new LessonPlanRequest());
+        assertTrue(plan.contains("学情分析、教学准备、板书设计、作业设计"));
+    }
+
+    @Test
+    @DisplayName("buildSectionPlanText: 用户勾选 -> 含勾选项且不含未勾选项")
+    void buildSectionPlanText_chosenSections_reflected() {
+        LessonPlanRequest req = new LessonPlanRequest();
+        req.setOptionalSections(List.of("板书设计", "教学反思框架"));
+        String plan = AddrfPipeline.buildSectionPlanText(req);
+        assertTrue(plan.contains("板书设计、教学反思框架"));
+        assertFalse(plan.contains("学情分析、教学准备、板书设计、作业设计"), "未勾选的默认集不应出现在计划中");
+    }
+
+    @Test
+    @DisplayName("buildSectionPlanText: 空数组(仅骨架) -> 无勾选行")
+    void buildSectionPlanText_emptySections_skeletonOnly() {
+        LessonPlanRequest req = new LessonPlanRequest();
+        req.setOptionalSections(List.of());
+        String plan = AddrfPipeline.buildSectionPlanText(req);
+        assertTrue(plan.contains("固定骨架"));
+        assertFalse(plan.contains("用户勾选的附加模块"));
     }
 }
